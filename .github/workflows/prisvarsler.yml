@@ -1,6 +1,8 @@
 name: Gullpris og ringpris-varsler
 
 on:
+  push:
+    branches: [main]
   schedule:
     # 06:00 UTC = 07:00 norsk vintertid / 08:00 sommertid.
     # Juster timen (første tall) om du vil ha varselet på et annet tidspunkt.
