@@ -69,7 +69,7 @@
 
   <div class="card">
     <h2>🪙 Gullpris</h2>
-    <div class="muted">Skriv inn dagens pris (f.eks. fra gullprisen.no eller banken din) — tar deg 5 sekunder, og bygger opp kurven under.</div>
+    <div class="muted">Hentes automatisk fra GitHub Actions. Du kan fortsatt legge inn manuelle priser ved behov.</div>
     <div class="row">
       <label class="muted">Karat:</label>
       <select id="karat">
@@ -93,7 +93,8 @@
   <div class="card">
     <h2>📈 Prisutvikling</h2>
     <div id="chartArea"></div>
-    <div class="muted" style="margin-top:6px;">Bygges opp av dine egne registreringer over tid.</div>
+    <div class="muted" id="automaticHistoryMeta" style="margin-top:6px;">Laster automatisk historikk …</div>
+    <div class="muted" style="margin-top:4px;">Kurven bruker GitHub-historikk som primærkilde og tar med manuelle lokale registreringer der de finnes.</div>
   </div>
 
   <div class="card">
@@ -109,10 +110,9 @@
   </div>
 
   <div class="note" style="margin: -4px 0 16px;">
-    <strong>Om automatikk:</strong> denne siden er et manuelt oversiktsbilde — de faktiske push-varslene
-    kommer fra <a href="https://github.com" target="_blank" rel="noopener">GitHub Actions-scriptet</a> som kjører
-    automatisk hver dag i skyen, ikke fra denne nettsiden selv (nettlesere kan ikke hente data fra andre
-    nettsteder på egen hånd av sikkerhetsgrunner).
+    <strong>Om automatikk:</strong> GitHub Actions-scriptet henter gullpris og ringpriser hver dag,
+    lagrer historikk og sender push-varsler via ntfy. Nettsiden henter den publiserte gullhistorikken
+    fra GitHub Pages og kombinerer den med eventuelle manuelle lokale registreringer.
   </div>
 
 </div>
@@ -120,6 +120,8 @@
 <script>
 const KEY_HISTORY = 'gold-history-v4';
 const KEY_SMEDS = 'goldsmiths-v4';
+const AUTO_HISTORY_URL = 'gullpris_historikk.json';
+const HISTORY_LIMIT_DAYS = 730;
 
 const defaultRings = [
   { name: 'Giftering Promise 4 mm oval', shop: 'Thune', material: 'Gult gull (585)', width: '4 mm', price: '11850', url: 'https://www.thune.no/giftering-promise-4-mm-gult-gull-oval' },
@@ -127,16 +129,80 @@ const defaultRings = [
   { name: 'Giftering 585 gult gull', shop: 'Gullfunn', material: '585 gult gull', width: '4 mm', price: '', url: 'https://www.gullfunn.no/produkter/1001206/giftering-i-585-gult-gull--4-mm-bredde' }
 ];
 
-let state = { history: [], rings: null };
+let state = { history: [], rings: null, githubUpdated: null, githubCount: 0, githubError: null };
 
 // Bruker vanlig nettleser-lagring (localStorage) siden dette nå er en
 // frittstående nettside utenfor Claude, ikke en artefakt.
 async function loadState() {
   try { const h = localStorage.getItem(KEY_HISTORY); state.history = h ? JSON.parse(h) : []; } catch { state.history = []; }
   try { const s = localStorage.getItem(KEY_SMEDS); state.rings = s ? JSON.parse(s) : defaultRings; } catch { state.rings = defaultRings; }
+  await loadAutomaticHistory();
 }
 async function saveHistory() { try { localStorage.setItem(KEY_HISTORY, JSON.stringify(state.history)); } catch (e) { console.error(e); } }
 async function saveRings() { try { localStorage.setItem(KEY_SMEDS, JSON.stringify(state.rings)); } catch (e) { console.error(e); } }
+
+function normalizeHistoryEntry(entry, fallbackSource) {
+  if (!entry || typeof entry !== 'object') return null;
+  const date = String(entry.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const price24k = Number(entry.price24k ?? entry.price_24k);
+  if (!Number.isFinite(price24k) || price24k <= 0) return null;
+  return { date, price24k, source: entry.source || fallbackSource };
+}
+
+function sortAndLimitHistory(history) {
+  return history
+    .filter(Boolean)
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-HISTORY_LIMIT_DAYS);
+}
+
+function mergeHistory(automaticHistory, localHistory) {
+  const byDate = new Map();
+  localHistory
+    .map(entry => normalizeHistoryEntry(entry, 'local'))
+    .filter(entry => entry && entry.source !== 'github')
+    .forEach(entry => byDate.set(entry.date, entry));
+  automaticHistory
+    .map(entry => normalizeHistoryEntry(entry, 'github'))
+    .filter(Boolean)
+    .forEach(entry => byDate.set(entry.date, entry));
+  return sortAndLimitHistory([...byDate.values()]);
+}
+
+async function loadAutomaticHistory() {
+  const localHistory = Array.isArray(state.history) ? state.history : [];
+  try {
+    const response = await fetch(AUTO_HISTORY_URL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const automaticHistory = await response.json();
+    if (!Array.isArray(automaticHistory)) throw new Error('Ugyldig historikkformat');
+    const validAutomaticHistory = sortAndLimitHistory(automaticHistory
+      .map(entry => normalizeHistoryEntry(entry, 'github'))
+      .filter(Boolean));
+    state.history = mergeHistory(validAutomaticHistory, localHistory);
+    state.githubCount = validAutomaticHistory.length;
+    state.githubUpdated = validAutomaticHistory.length ? validAutomaticHistory[validAutomaticHistory.length - 1].date : null;
+    state.githubError = null;
+    await saveHistory();
+  } catch (e) {
+    state.history = sortAndLimitHistory(localHistory.map(entry => normalizeHistoryEntry(entry, entry?.source || 'local')));
+    state.githubCount = 0;
+    state.githubUpdated = null;
+    state.githubError = e.message;
+  }
+}
+
+function renderAutomaticHistoryMeta() {
+  const el = document.getElementById('automaticHistoryMeta');
+  if (state.githubUpdated) {
+    el.textContent = `Sist oppdatert fra GitHub: ${state.githubUpdated} (${state.githubCount} automatiske punkter)`;
+  } else if (state.githubError) {
+    el.textContent = `Automatisk historikk kunne ikke hentes ennå (${state.githubError}). Viser lokale registreringer.`;
+  } else {
+    el.textContent = 'Ingen automatisk GitHub-historikk er publisert ennå.';
+  }
+}
 
 function setStatus(msg, ok) {
   const el = document.getElementById('status');
@@ -169,9 +235,11 @@ document.getElementById('manualSave').addEventListener('click', async () => {
   const price24k = val / karatFactor();
   const today = new Date().toISOString().slice(0, 10);
   const last = state.history[state.history.length - 1];
-  if (last && last.date === today) last.price24k = price24k;
-  else state.history.push({ date: today, price24k });
-  if (state.history.length > 800) state.history = state.history.slice(-800);
+  if (last && last.date === today) {
+    last.price24k = price24k;
+    last.source = 'local';
+  } else state.history.push({ date: today, price24k, source: 'local' });
+  if (state.history.length > HISTORY_LIMIT_DAYS) state.history = state.history.slice(-HISTORY_LIMIT_DAYS);
   await saveHistory();
   renderCurrentPrice();
   drawChart();
@@ -199,6 +267,12 @@ function drawChart() {
     const y = h - pad - ((d.price24k * factor - min) / range) * (h - 2 * pad);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
+  const manualPoints = data.map((d, i) => {
+    if (d.source !== 'local') return '';
+    const x = pad + (i / (data.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((d.price24k * factor - min) / range) * (h - 2 * pad);
+    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="#4a7c59"><title>Manuell registrering: ${d.date}</title></circle>`;
+  }).join('');
 
   const first = data[0], lastPt = data[data.length - 1];
 
@@ -212,6 +286,7 @@ function drawChart() {
       </defs>
       <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="url(#goldFade)" stroke="none" />
       <polyline points="${points}" fill="none" stroke="#b8860b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+      ${manualPoints}
       <text x="${pad}" y="${h - 6}" font-size="11" fill="#8a7c63">${first.date}</text>
       <text x="${w - pad}" y="${h - 6}" font-size="11" fill="#8a7c63" text-anchor="end">${lastPt.date}</text>
       <text x="${pad}" y="16" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr/g</text>
@@ -301,6 +376,7 @@ document.getElementById('addRing').addEventListener('click', () => {
   renderRingList();
   renderCurrentPrice();
   drawChart();
+  renderAutomaticHistoryMeta();
 })();
 </script>
 </body>

@@ -75,6 +75,7 @@ RINGS = [
 
 GOLD_HISTORY_FILE = Path(__file__).parent / "gullpris_historikk.json"
 RING_HISTORY_FILE = Path(__file__).parent / "ring_historikk.json"
+GOLD_HISTORY_LIMIT_DAYS = 730
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PrisvarslerBot/1.0; personlig prissjekk)"}
 DEBUG = "--debug" in sys.argv
 
@@ -90,12 +91,13 @@ def log(*args):
 
 def send_ntfy(title, message, priority="default", tags="moneybag"):
     try:
-        requests.post(
+        response = requests.post(
             f"{NTFY_SERVER}/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={"Title": title, "Priority": priority, "Tags": tags},
             timeout=10,
         )
+        response.raise_for_status()
         print(f"  → ntfy sendt: {title}")
     except requests.RequestException as e:
         print(f"  Klarte ikke sende ntfy-varsel: {e}")
@@ -157,7 +159,7 @@ def check_gold_price():
         history[-1]["price_24k"] = price_24k
     else:
         history.append({"date": today, "price_24k": price_24k})
-    save_json(GOLD_HISTORY_FILE, history[-800:])
+    save_json(GOLD_HISTORY_FILE, history[-GOLD_HISTORY_LIMIT_DAYS:])
 
 
 # ==========================================================================
@@ -295,6 +297,7 @@ def check_ring_prices():
 # ==========================================================================
 
 def main():
+    send_ntfy("✓ Prissjekk startet", "Gullpris-varsler kjører nå...", priority="default", tags="heart")
     check_gold_price()
     print()
     check_ring_prices()
