@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hent kode
+        uses: actions/checkout@v5
+
+      - name: Sett opp Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Installer avhengigheter
+        run: |
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      - name: Lint med ruff
+        run: ruff check gullsmed_prisvarsler.py tests/
+
+      - name: Kjør tester
+        run: pytest tests/ -v
+
+      - name: Valider JSON-datafiler
+        run: |
+          python3 -c "import json; json.load(open('rings.json'))"
+          python3 -c "import json; json.load(open('gullpris_historikk.json'))"
+          python3 -c "import json; json.load(open('ring_historikk.json'))"

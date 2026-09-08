@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Gullpris & Gifteringer</title>
+<meta name="description" content="Gulljakt følger gullprisen og prisen på utvalgte gifteringer, med automatiske varsler når det lønner seg å kjøpe.">
+<meta name="theme-color" content="#b8860b">
+<meta property="og:title" content="Gull & Gifteringer">
+<meta property="og:description" content="Følger gullpris og ringpriser med gyllen omtanke, for den store dagen.">
+<meta property="og:type" content="website">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%8D%3C/text%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%92%8D%3C/text%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -109,6 +117,16 @@
     </div>
   </div>
 
+  <div class="card">
+    <h2>📈 Ringpris-utvikling</h2>
+    <div class="row" style="margin-top:0;">
+      <label class="muted">Ring:</label>
+      <select id="ringChartSelect"></select>
+    </div>
+    <div id="ringChartArea" style="margin-top:10px;"></div>
+    <div class="muted" id="ringHistoryMeta" style="margin-top:6px;">Laster automatisk ringhistorikk …</div>
+  </div>
+
   <div class="note" style="margin: -4px 0 16px;">
     <strong>Om automatikk:</strong> GitHub Actions-scriptet henter gullpris og ringpriser hver dag,
     lagrer historikk og sender push-varsler via ntfy. Nettsiden henter den publiserte gullhistorikken
@@ -121,22 +139,87 @@
 const KEY_HISTORY = 'gold-history-v4';
 const KEY_SMEDS = 'goldsmiths-v4';
 const AUTO_HISTORY_URL = 'gullpris_historikk.json';
+const RINGS_CONFIG_URL = 'rings.json';
+const RING_HISTORY_URL = 'ring_historikk.json';
 const HISTORY_LIMIT_DAYS = 730;
+const RING_BELOW_AVG_PCT = 3.0;
 
+// Fallback dersom rings.json ikke kan hentes (f.eks. offline første last).
 const defaultRings = [
   { name: 'Giftering Promise 4 mm oval', shop: 'Thune', material: 'Gult gull (585)', width: '4 mm', price: '11850', url: 'https://www.thune.no/giftering-promise-4-mm-gult-gull-oval' },
   { name: 'Giftering, D-A Solid', shop: 'David-Andersen', material: '585 gull (gult/hvitt/rosé) / 950 platina', width: '2–5 mm (flere valg)', price: '11400', url: 'https://david-andersen.no/giftering-d-a-solid/?productId=solid' },
-  { name: 'Giftering 585 gult gull', shop: 'Gullfunn', material: '585 gult gull', width: '4 mm', price: '', url: 'https://www.gullfunn.no/produkter/1001206/giftering-i-585-gult-gull--4-mm-bredde' }
+  { name: 'Giftering 585 gult gull', shop: 'Gullfunn', material: '585 gult gull', width: '4 mm', price: '14999', url: 'https://www.gullfunn.no/produkter/1001206/giftering-i-585-gult-gull--4-mm-bredde' }
 ];
 
-let state = { history: [], rings: null, githubUpdated: null, githubCount: 0, githubError: null };
+let state = {
+  history: [], rings: null, githubUpdated: null, githubCount: 0, githubError: null,
+  ringHistory: {}, ringHistoryError: null, ringHistoryUpdated: null,
+};
 
 // Bruker vanlig nettleser-lagring (localStorage) siden dette nå er en
 // frittstående nettside utenfor Claude, ikke en artefakt.
 async function loadState() {
   try { const h = localStorage.getItem(KEY_HISTORY); state.history = h ? JSON.parse(h) : []; } catch { state.history = []; }
-  try { const s = localStorage.getItem(KEY_SMEDS); state.rings = s ? JSON.parse(s) : defaultRings; } catch { state.rings = defaultRings; }
+  try {
+    const s = localStorage.getItem(KEY_SMEDS);
+    state.rings = s ? JSON.parse(s) : null;
+  } catch { state.rings = null; }
+  await loadRingsConfig();
   await loadAutomaticHistory();
+  await loadRingHistory();
+}
+
+async function loadRingsConfig() {
+  // rings.json er delt med gullsmed_prisvarsler.py (samme fil brukes av
+  // Python-scriptet), slik at ringlisten aldri kommer ut av synk mellom
+  // backend og frontend. Lokalt redigerte ringer (localStorage) har
+  // forrang dersom brukeren allerede har tilpasset listen sin.
+  if (state.rings) return; // brukeren har allerede en lokal, tilpasset liste
+  try {
+    const response = await fetch(RINGS_CONFIG_URL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const rings = await response.json();
+    if (!Array.isArray(rings)) throw new Error('Ugyldig rings.json-format');
+    state.rings = rings;
+  } catch (e) {
+    console.warn('Klarte ikke hente rings.json, bruker innebygd standardliste:', e.message);
+    state.rings = defaultRings;
+  }
+}
+
+async function loadRingHistory() {
+  try {
+    const response = await fetch(RING_HISTORY_URL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data || typeof data !== 'object') throw new Error('Ugyldig ring_historikk.json-format');
+    state.ringHistory = data;
+    state.ringHistoryError = null;
+    let latest = null;
+    for (const entry of Object.values(data)) {
+      const entries = Array.isArray(entry?.entries) ? entry.entries : [];
+      const last = entries[entries.length - 1];
+      if (last?.date && (!latest || last.date > latest)) latest = last.date;
+    }
+    state.ringHistoryUpdated = latest;
+
+    // Bruk siste kjente skrapte pris til å oppdatere ringlisten dersom
+    // ringen ikke har en nyere/lokalt registrert pris.
+    if (Array.isArray(state.rings)) {
+      state.rings = state.rings.map(r => {
+        const hist = data[r.url];
+        const lastEntry = hist?.entries?.[hist.entries.length - 1];
+        if (lastEntry && (!r.price || r.priceSource === 'auto' || r.priceSource == null)) {
+          return { ...r, price: String(lastEntry.price), priceSource: 'auto' };
+        }
+        return r;
+      });
+    }
+  } catch (e) {
+    state.ringHistory = {};
+    state.ringHistoryError = e.message;
+    state.ringHistoryUpdated = null;
+  }
 }
 async function saveHistory() { try { localStorage.setItem(KEY_HISTORY, JSON.stringify(state.history)); } catch (e) { console.error(e); } }
 async function saveRings() { try { localStorage.setItem(KEY_SMEDS, JSON.stringify(state.rings)); } catch (e) { console.error(e); } }
@@ -294,6 +377,16 @@ function drawChart() {
     </svg>`;
 }
 
+function ringIsBelowOwnAverage(url) {
+  const hist = state.ringHistory?.[url];
+  const entries = Array.isArray(hist?.entries) ? hist.entries : [];
+  if (entries.length < 3) return false;
+  const prevPrices = entries.slice(0, -1).map(e => e.price);
+  const avg = prevPrices.reduce((a, b) => a + b, 0) / prevPrices.length;
+  const current = entries[entries.length - 1].price;
+  return current < avg * (1 - RING_BELOW_AVG_PCT / 100);
+}
+
 function renderRingList() {
   const list = document.getElementById('ringList');
   list.innerHTML = '';
@@ -311,17 +404,87 @@ function renderRingList() {
     a.target = '_blank';
     a.rel = 'noopener';
     const priceLabel = r.price ? parseFloat(r.price).toLocaleString('no-NO') + ' kr' : '–';
+    const isCheapest = r.name === cheapestName;
+    const isBelowAvg = ringIsBelowOwnAverage(r.url);
+    let badge = '';
+    if (isCheapest && isBelowAvg) badge = '<span class="cheapest">Billigst &amp; under snitt 🎯</span>';
+    else if (isCheapest) badge = '<span class="cheapest">Billigst</span>';
     a.innerHTML = `
       <div>
         <div class="ring-shop">${r.shop || ''}</div>
         <div class="ring-name">${r.name || 'Uten navn'}</div>
         <div class="ring-details">${[r.material, r.width].filter(Boolean).join(' · ')}</div>
       </div>
-      <div class="ring-price">${priceLabel}${r.name === cheapestName ? '<span class="cheapest">Billigst</span>' : ''}</div>
+      <div class="ring-price">${priceLabel}${badge}</div>
     `;
     list.appendChild(a);
   });
   if (state.rings.length === 0) list.innerHTML = '<div class="muted">Ingen ringer lagt til ennå.</div>';
+}
+
+function populateRingChartSelect() {
+  const select = document.getElementById('ringChartSelect');
+  const urlsWithHistory = Object.keys(state.ringHistory).filter(
+    u => Array.isArray(state.ringHistory[u]?.entries) && state.ringHistory[u].entries.length > 1
+  );
+  select.innerHTML = urlsWithHistory
+    .map(u => `<option value="${u}">${state.ringHistory[u].shop} – ${state.ringHistory[u].name}</option>`)
+    .join('');
+  if (!select.dataset.bound) {
+    select.addEventListener('change', drawRingChart);
+    select.dataset.bound = '1';
+  }
+}
+
+function renderRingHistoryMeta() {
+  const el = document.getElementById('ringHistoryMeta');
+  if (state.ringHistoryUpdated) {
+    el.textContent = `Sist oppdatert fra GitHub: ${state.ringHistoryUpdated}`;
+  } else if (state.ringHistoryError) {
+    el.textContent = `Automatisk ringhistorikk kunne ikke hentes ennå (${state.ringHistoryError}).`;
+  } else {
+    el.textContent = 'Ingen automatisk ringhistorikk er publisert ennå.';
+  }
+}
+
+function drawRingChart() {
+  const el = document.getElementById('ringChartArea');
+  const select = document.getElementById('ringChartSelect');
+  const url = select.value;
+  const hist = state.ringHistory[url];
+  const entries = Array.isArray(hist?.entries) ? hist.entries : [];
+  if (entries.length < 2) {
+    el.innerHTML = '<div class="muted">Trenger minst 2 registreringer for å tegne en kurve.</div>';
+    return;
+  }
+  const w = 640, h = 200, pad = 32;
+  const prices = entries.map(e => e.price);
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const range = (max - min) || 1;
+
+  const points = entries.map((e, i) => {
+    const x = pad + (i / (entries.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((e.price - min) / range) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const first = entries[0], last = entries[entries.length - 1];
+
+  el.innerHTML = `
+    <svg class="chart" viewBox="0 0 ${w} ${h}">
+      <defs>
+        <linearGradient id="ringFade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#4a7c59" stop-opacity="0.20"/>
+          <stop offset="100%" stop-color="#4a7c59" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="url(#ringFade)" stroke="none" />
+      <polyline points="${points}" fill="none" stroke="#4a7c59" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+      <text x="${pad}" y="${h - 6}" font-size="11" fill="#8a7c63">${first.date}</text>
+      <text x="${w - pad}" y="${h - 6}" font-size="11" fill="#8a7c63" text-anchor="end">${last.date}</text>
+      <text x="${pad}" y="16" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr</text>
+      <text x="${pad}" y="${h - pad + 14}" font-size="11" fill="#8a7c63">${min.toFixed(0)} kr</text>
+    </svg>`;
 }
 
 function renderEditPanel() {
@@ -348,6 +511,7 @@ document.addEventListener('input', (e) => {
     const i = parseInt(e.target.dataset.i);
     const f = e.target.dataset.f;
     state.rings[i][f] = e.target.value;
+    if (f === 'price') state.rings[i].priceSource = 'manual';
     saveRings();
     renderRingList();
   }
@@ -377,6 +541,9 @@ document.getElementById('addRing').addEventListener('click', () => {
   renderCurrentPrice();
   drawChart();
   renderAutomaticHistoryMeta();
+  populateRingChartSelect();
+  drawRingChart();
+  renderRingHistoryMeta();
 })();
 </script>
 </body>

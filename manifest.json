@@ -1,0 +1,10 @@
+{
+  "name": "Gull & Gifteringer",
+  "short_name": "Gulljakt",
+  "description": "Følger gullpris og ringpriser med gyllen omtanke, for den store dagen.",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#faf6ec",
+  "theme_color": "#b8860b",
+  "icons": []
+}

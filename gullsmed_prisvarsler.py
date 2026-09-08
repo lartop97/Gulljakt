@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-gullsmed_prisvarsler.py (v2)
+gullsmed_prisvarsler.py (v3)
 
 Kjører HELE automatikken som nettsiden ikke får lov til å gjøre selv
 (artefakt-sandkassen til Claude tillater ikke at siden henter data fra
@@ -9,17 +9,17 @@ vanlig internett-tilgang og kan derfor:
 
   1. Hente dagens gullpris (USD/oz) + USD/NOK-kurs, regne om til kr/gram
      for valgt karat, og varsle når prisen faller mer enn valgt terskel.
-  2. Sjekke prisen på ringene dine hos Thune, David-Andersen og Gullfunn,
-     og varsle når én av dem er BÅDE billigst av de du følger OG lavere
-     enn sitt eget historiske snitt (ikke bare "alltid billigst").
+  2. Sjekke prisen på ringene dine (konfigurert i rings.json), og varsle
+     når én av dem er BÅDE billigst av de du følger OG lavere enn sitt
+     eget historiske snitt (ikke bare "alltid billigst").
   3. Sende ekte push via ntfy.sh for begge deler.
 
 --------------------------------------------------------------------------
 OPPSETT
 --------------------------------------------------------------------------
-1. pip install requests beautifulsoup4
-2. Fyll inn NTFY_TOPIC og juster RINGS / GOLD_KARAT / GOLD_DROP_THRESHOLD_PCT
-   nedenfor.
+1. pip install -r requirements.txt
+2. Fyll inn NTFY_TOPIC (miljøvariabel/GitHub-secret) og juster ringene i
+   rings.json samt GOLD_KARAT / GOLD_DROP_THRESHOLD_PCT nedenfor.
 3. Test manuelt:  python3 gullsmed_prisvarsler.py --debug
 4. Legg i cron for daglig automatisk kjøring, f.eks. kl 08:00:
    crontab -e
@@ -28,6 +28,9 @@ OPPSETT
 Historikk lagres i to filer ved siden av scriptet:
   gullpris_historikk.json   (gullpris over tid)
   ring_historikk.json       (pris per ring over tid)
+
+Ringene som følges konfigureres i rings.json (samme fil som nettsiden
+leser), slik at Python og JavaScript aldri kommer ut av synk.
 --------------------------------------------------------------------------
 """
 
@@ -35,8 +38,9 @@ import json
 import os
 import re
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -48,36 +52,53 @@ from bs4 import BeautifulSoup
 # NTFY_TOPIC kan settes her direkte, ELLER som miljøvariabel/GitHub-secret
 # (miljøvariabelen vinner hvis den finnes) — praktisk når scriptet kjører
 # via GitHub Actions og du ikke vil ha emnenavnet liggende i selve koden.
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "sett-ditt-ntfy-emne-her")
+NTFY_TOPIC_PLACEHOLDER = "sett-ditt-ntfy-emne-her"
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", NTFY_TOPIC_PLACEHOLDER)
 NTFY_SERVER = "https://ntfy.sh"
 
 GOLD_KARAT = 0.75              # 18K = 0.75, 14K = 0.585, 9K = 0.375, 22K = 0.916
 GOLD_DROP_THRESHOLD_PCT = 1.0  # varsle når gullprisen faller mer enn dette siden forrige sjekk
 RING_BELOW_AVG_PCT = 3.0       # varsle når en ring er > 3% under sitt eget snitt
 
-RINGS = [
-    {
-        "name": "Giftering Promise 4 mm oval",
-        "shop": "Thune",
-        "url": "https://www.thune.no/giftering-promise-4-mm-gult-gull-oval",
-    },
-    {
-        "name": "Giftering, D-A Solid",
-        "shop": "David-Andersen",
-        "url": "https://david-andersen.no/giftering-d-a-solid/?productId=solid",
-    },
-    {
-        "name": "Giftering 585 gult gull",
-        "shop": "Gullfunn",
-        "url": "https://www.gullfunn.no/produkter/1001206/giftering-i-585-gult-gull--4-mm-bredde",
-    },
-]
+# Sanity-grenser brukt til å avvise åpenbart feilaktige skrapte priser før
+# de lagres i historikken (se P0-bugs: regex-fallback har tidligere plukket
+# opp fraktpriser/varianter og lagret priser 10-100x for høye).
+GOLD_MIN_NOK_PER_GRAM_24K = 200.0
+GOLD_MAX_NOK_PER_GRAM_24K = 5000.0
+GOLD_MAX_CHANGE_PCT = 15.0     # avvis endring fra forrige dag > 15% (sannsynlig feil)
 
+RING_MIN_PRICE = 500.0
+RING_MAX_PRICE = 500000.0
+RING_MAX_CHANGE_PCT = 50.0     # avvis endring fra forrige registrering > 50% (sannsynlig feil)
+
+RINGS_CONFIG_FILE = Path(__file__).parent / "rings.json"
 GOLD_HISTORY_FILE = Path(__file__).parent / "gullpris_historikk.json"
 RING_HISTORY_FILE = Path(__file__).parent / "ring_historikk.json"
 GOLD_HISTORY_LIMIT_DAYS = 730
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PrisvarslerBot/1.0; personlig prissjekk)"}
 DEBUG = "--debug" in sys.argv
+
+HTTP_MAX_RETRIES = 3
+HTTP_BACKOFF_SECONDS = 2
+
+
+def load_rings():
+    """Leser ringkonfigurasjonen fra rings.json (delt med nettsiden)."""
+    if not RINGS_CONFIG_FILE.exists():
+        print(f"  ADVARSEL: fant ikke {RINGS_CONFIG_FILE}, ingen ringer å sjekke.")
+        return []
+    try:
+        rings = json.loads(RINGS_CONFIG_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"  ADVARSEL: klarte ikke lese {RINGS_CONFIG_FILE}: {e}")
+        return []
+    if not isinstance(rings, list):
+        print(f"  ADVARSEL: {RINGS_CONFIG_FILE} skal inneholde en liste.")
+        return []
+    return [r for r in rings if isinstance(r, dict) and r.get("url") and r.get("name")]
+
+
+RINGS = load_rings()
 
 
 # ==========================================================================
@@ -89,7 +110,33 @@ def log(*args):
         print(*args)
 
 
+def request_with_retries(method, url, **kwargs):
+    """Enkel retry/backoff-wrapper rundt requests, for å tåle forbigående
+    nettverksfeil i stedet for å hoppe over hele dagens datapunkt."""
+    last_exc = None
+    for attempt in range(1, HTTP_MAX_RETRIES + 1):
+        try:
+            response = requests.request(method, url, **kwargs)
+            response.raise_for_status()
+            return response
+        except requests.RequestException as e:
+            last_exc = e
+            if attempt < HTTP_MAX_RETRIES:
+                wait = HTTP_BACKOFF_SECONDS * attempt
+                log(f"    Forsøk {attempt} feilet ({e}), prøver igjen om {wait}s …")
+                time.sleep(wait)
+    raise last_exc
+
+
 def send_ntfy(title, message, priority="default", tags="moneybag"):
+    if not NTFY_TOPIC or NTFY_TOPIC == NTFY_TOPIC_PLACEHOLDER:
+        print(
+            "  ADVARSEL: NTFY_TOPIC er ikke satt (fortsatt plassholderverdi). "
+            "Hopper over varsel i stedet for å sende det til et offentlig, "
+            "ubrukt emne. Sett miljøvariabelen/secreten NTFY_TOPIC for å "
+            "aktivere push-varsler."
+        )
+        return
     try:
         response = requests.post(
             f"{NTFY_SERVER}/{NTFY_TOPIC}",
@@ -119,15 +166,25 @@ def save_json(path, data):
 
 def fetch_gold_nok_per_gram_24k():
     """Henter gullpris i USD/oz og USD/NOK-kurs, returnerer kr/gram for rent (24K) gull."""
-    gold_res = requests.get("https://data-asg.goldprice.org/dbXRates/USD", headers=HEADERS, timeout=15)
-    gold_res.raise_for_status()
+    gold_res = request_with_retries("GET", "https://data-asg.goldprice.org/dbXRates/USD", headers=HEADERS, timeout=15)
     usd_per_oz = gold_res.json()["items"][0]["xauPrice"]
 
-    fx_res = requests.get("https://api.frankfurter.app/latest?from=USD&to=NOK", headers=HEADERS, timeout=15)
-    fx_res.raise_for_status()
+    fx_res = request_with_retries("GET", "https://api.frankfurter.app/latest?from=USD&to=NOK", headers=HEADERS, timeout=15)
     nok_rate = fx_res.json()["rates"]["NOK"]
 
     return (usd_per_oz * nok_rate) / 31.1034768
+
+
+def is_sane_gold_price(price_24k, previous_price_24k):
+    """Avviser gullpriser som er urealistiske eller hopper for mye siden sist,
+    slik at en API-feil ikke stille forurenser historikken."""
+    if not (GOLD_MIN_NOK_PER_GRAM_24K <= price_24k <= GOLD_MAX_NOK_PER_GRAM_24K):
+        return False
+    if previous_price_24k:
+        change_pct = abs(price_24k - previous_price_24k) / previous_price_24k * 100
+        if change_pct > GOLD_MAX_CHANGE_PCT:
+            return False
+    return True
 
 
 def check_gold_price():
@@ -135,16 +192,29 @@ def check_gold_price():
     history = load_json(GOLD_HISTORY_FILE, [])
     try:
         price_24k = fetch_gold_nok_per_gram_24k()
-    except Exception as e:
+    except (requests.RequestException, KeyError, IndexError, ValueError, TypeError) as e:
         print(f"  Feil ved henting av gullpris: {e}")
         return
 
+    prev = history[-1]["price_24k"] if history else None
+    if not is_sane_gold_price(price_24k, prev):
+        print(
+            f"  ADVARSEL: skrapet gullpris ({price_24k:.1f} kr/g for 24K) ser urealistisk ut "
+            "og lagres ikke. Sjekk kildene manuelt."
+        )
+        send_ntfy(
+            "⚠️ Mistenkelig gullpris",
+            f"Hentet {price_24k:.0f} kr/g (24K), forrige var {prev or '–'}. Lagres ikke automatisk.",
+            priority="high",
+            tags="warning",
+        )
+        return
+
     price_karat = price_24k * GOLD_KARAT
-    today = datetime.now().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     print(f"  Pris nå ({GOLD_KARAT * 24:.0f}K): {price_karat:.1f} kr/g")
 
-    if history:
-        prev = history[-1]["price_24k"]
+    if prev:
         diff_pct = (price_24k - prev) / prev * 100
         if diff_pct <= -GOLD_DROP_THRESHOLD_PCT:
             send_ntfy(
@@ -182,8 +252,21 @@ def parse_nok_number(text):
         return None
 
 
-def extract_price(html):
+def extract_price(html, selector=None):
+    """Prøver strukturerte kilder først (JSON-LD, meta, itemprop), som er
+    langt mer pålitelige enn en fri-tekst-regex over hele siden. Regex-
+    fallbacket er bevisst begrenset og bør helst unngås — bruk heller en
+    per-nettsted CSS-selector-overstyring (`selector`) i rings.json hvis en
+    butikk mangler strukturert data."""
     soup = BeautifulSoup(html, "html.parser")
+
+    if selector:
+        tag = soup.select_one(selector)
+        if tag:
+            price = parse_nok_number(tag.get("content") or tag.get_text())
+            if price:
+                log(f"  [funnet via CSS-selector {selector!r}]")
+                return price
 
     for script in soup.find_all("script", type="application/ld+json"):
         try:
@@ -216,6 +299,10 @@ def extract_price(html):
             log("  [funnet via itemprop=price]")
             return price
 
+    # Siste utvei: se etter et pris-lignende mønster i selve teksten. Dette
+    # er upålitelig (kan plukke opp frakt/andre priser på siden), så bruk
+    # kun det første beløpet som ser ut som en "vanlig" pris i kr-format,
+    # og la sanity-sjekken i check_ring_prices() luke ut åpenbare feil.
     text = soup.get_text(" ", strip=True)
     matches = re.findall(r"\d{1,3}(?:[ .]\d{3})*(?:,\d{2})?\s?(?:,-|kr)", text, flags=re.IGNORECASE)
     prices = [p for p in (parse_nok_number(m) for m in matches) if p and 500 < p < 500000]
@@ -226,23 +313,33 @@ def extract_price(html):
     return None
 
 
-def fetch_ring_price(url):
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    return extract_price(resp.text)
+def fetch_ring_price(url, selector=None):
+    resp = request_with_retries("GET", url, headers=HEADERS, timeout=15)
+    return extract_price(resp.text, selector=selector)
+
+
+def is_sane_ring_price(price, previous_price):
+    if not (RING_MIN_PRICE <= price <= RING_MAX_PRICE):
+        return False
+    if previous_price:
+        change_pct = abs(price - previous_price) / previous_price * 100
+        if change_pct > RING_MAX_CHANGE_PCT:
+            return False
+    return True
 
 
 def check_ring_prices():
     print("Sjekker ringpriser …")
     history = load_json(RING_HISTORY_FILE, {})
-    today = datetime.now().date().isoformat()
+    today = datetime.now(timezone.utc).date().isoformat()
     current_prices = {}
 
     for ring in RINGS:
         name, url = ring["name"], ring["url"]
-        print(f"  {ring['shop']} – {name}")
+        selector = ring.get("selector")
+        print(f"  {ring.get('shop', '?')} – {name}")
         try:
-            price = fetch_ring_price(url)
+            price = fetch_ring_price(url, selector=selector)
         except requests.RequestException as e:
             print(f"    Feil ved henting: {e}")
             continue
@@ -250,10 +347,25 @@ def check_ring_prices():
             print("    Fant ikke pris automatisk (kjør med --debug for detaljer).")
             continue
 
+        previous_entries = history.get(url, {}).get("entries", [])
+        previous_price = previous_entries[-1]["price"] if previous_entries else None
+        if not is_sane_ring_price(price, previous_price):
+            print(
+                f"    ADVARSEL: skrapet pris ({price:.0f} kr) ser urealistisk ut "
+                f"(forrige: {previous_price or '–'} kr) og lagres ikke."
+            )
+            send_ntfy(
+                "⚠️ Mistenkelig ringpris",
+                f"{ring.get('shop', '?')} – {name}: hentet {price:.0f} kr, forrige {previous_price or '–'} kr. Lagres ikke.",
+                priority="high",
+                tags="warning",
+            )
+            continue
+
         print(f"    Pris nå: {price:.0f} kr")
         current_prices[name] = price
 
-        entries = history.setdefault(url, {"name": name, "shop": ring["shop"], "entries": []})["entries"]
+        entries = history.setdefault(url, {"name": name, "shop": ring.get("shop", ""), "entries": []})["entries"]
         if entries and entries[-1]["date"] == today:
             entries[-1]["price"] = price
         else:
