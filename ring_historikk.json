@@ -1,0 +1,32 @@
+{
+  "https://www.thune.no/giftering-promise-4-mm-gult-gull-oval": {
+    "name": "Giftering Promise 4 mm oval",
+    "shop": "Thune",
+    "entries": [
+      {
+        "date": "2026-09-08",
+        "price": 118500.0
+      }
+    ]
+  },
+  "https://david-andersen.no/giftering-d-a-solid/?productId=solid": {
+    "name": "Giftering, D-A Solid",
+    "shop": "David-Andersen",
+    "entries": [
+      {
+        "date": "2026-09-08",
+        "price": 1140000.0
+      }
+    ]
+  },
+  "https://www.gullfunn.no/produkter/1001206/giftering-i-585-gult-gull--4-mm-bredde": {
+    "name": "Giftering 585 gult gull",
+    "shop": "Gullfunn",
+    "entries": [
+      {
+        "date": "2026-09-08",
+        "price": 14999.0
+      }
+    ]
+  }
+}
