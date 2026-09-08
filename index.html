@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gullpris & Gifteringer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #faf6ec; --cream-deep: #f2ead9; --card: #fffdf8;
+    --gold: #b8860b; --gold-light: #d4af37; --gold-pale: #e9d9a8;
+    --ink: #3a2f1f; --muted: #8a7c63; --border: #e8dfc7;
+    --green: #4a7c59; --red: #a5453b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Inter', -apple-system, sans-serif;
+    background: linear-gradient(180deg, var(--cream) 0%, var(--cream-deep) 100%);
+    color: var(--ink); padding: 18px 14px 40px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  .hero { text-align: center; padding: 10px 0 18px; }
+  .hero-divider { width: 60px; height: 2px; margin: 10px auto 14px; background: linear-gradient(90deg, transparent, var(--gold-light), transparent); }
+  h1 { font-family: 'Cormorant Garamond', serif; font-size: 34px; font-weight: 600; margin: 0; color: #6b5416; }
+  .sub { color: var(--muted); font-size: 13.5px; margin-top: 4px; font-style: italic; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; margin-bottom: 16px; box-shadow: 0 2px 14px rgba(184,134,11,0.06); }
+  .card h2 { font-family: 'Cormorant Garamond', serif; font-size: 20px; font-weight: 600; margin: 0 0 12px; color: #6b5416; display: flex; align-items: center; gap: 8px; }
+  .price-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .price-big { font-family: 'Cormorant Garamond', serif; font-size: 38px; font-weight: 700; color: var(--gold); }
+  .price-unit { font-size: 13px; color: var(--muted); }
+  .delta { font-size: 13px; font-weight: 600; padding: 2px 9px; border-radius: 20px; }
+  .delta.up { color: var(--red); background: #f6e6e3; }
+  .delta.down { color: var(--green); background: #e5efe6; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  select, input[type=text], input[type=number] { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font-size: 14px; background: #fff; font-family: inherit; color: var(--ink); }
+  button { border: none; background: linear-gradient(135deg, var(--gold-light), var(--gold)); color: #fff; padding: 9px 15px; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button.secondary { background: var(--gold-pale); color: #6b5416; }
+  button.ghost { background: transparent; color: var(--gold); border: 1px solid var(--gold-pale); }
+  svg.chart { width: 100%; height: auto; display: block; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .status { font-size: 13px; margin-top: 8px; }
+  .status.ok { color: var(--green); } .status.err { color: var(--red); }
+  .note { font-size: 12px; color: var(--muted); background: var(--cream-deep); border-radius: 10px; padding: 10px 12px; margin-top: 10px; line-height: 1.5; border-left: 3px solid var(--gold-pale); }
+  .ring-list { display: flex; flex-direction: column; gap: 2px; }
+  .ring-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 4px; border-bottom: 1px solid var(--border); text-decoration: none; color: inherit; }
+  .ring-item:last-child { border-bottom: none; }
+  .ring-name { font-family: 'Cormorant Garamond', serif; font-size: 18px; font-weight: 600; color: var(--ink); }
+  .ring-shop { font-size: 11.5px; color: var(--gold); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  .ring-details { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  .ring-price { font-family: 'Cormorant Garamond', serif; font-size: 19px; font-weight: 700; color: var(--gold); white-space: nowrap; text-align: right; }
+  .ring-price .cheapest { display:block; font-size: 10px; color: var(--green); font-weight: 600; text-transform: uppercase; }
+  .edit-panel { margin-top: 14px; border-top: 1px dashed var(--border); padding-top: 14px; }
+  .edit-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: var(--cream-deep); border-radius: 10px; padding: 10px; margin-bottom: 8px; position: relative; }
+  .edit-row input { width: 100%; font-size: 13px; padding: 6px 8px; }
+  .edit-row .full { grid-column: 1 / -1; }
+  .edit-row .del { position: absolute; top: 6px; right: 6px; background: none; color: var(--red); padding: 2px 8px; font-size: 15px; }
+  .field-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 2px; display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <h1>Gull &amp; Gifteringer</h1>
+    <div class="hero-divider"></div>
+    <div class="sub">Fulgt med gyllen omtanke, for den store dagen</div>
+  </div>
+
+  <div class="card">
+    <h2>🪙 Gullpris</h2>
+    <div class="muted">Skriv inn dagens pris (f.eks. fra gullprisen.no eller banken din) — tar deg 5 sekunder, og bygger opp kurven under.</div>
+    <div class="row">
+      <label class="muted">Karat:</label>
+      <select id="karat">
+        <option value="0.375">9K (375)</option>
+        <option value="0.585">14K (585)</option>
+        <option value="0.75" selected>18K (750)</option>
+        <option value="0.916">22K (916)</option>
+      </select>
+      <input type="number" id="manualPrice" placeholder="kr/gram" style="width:110px;">
+      <button id="manualSave">Registrer pris</button>
+    </div>
+    <div class="price-row" style="margin-top:12px;">
+      <div class="price-big" id="priceBig">–</div>
+      <div class="price-unit">NOK / gram</div>
+      <div id="deltaBadge"></div>
+    </div>
+    <div class="muted" id="priceMeta"></div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>📈 Prisutvikling</h2>
+    <div id="chartArea"></div>
+    <div class="muted" style="margin-top:6px;">Bygges opp av dine egne registreringer over tid.</div>
+  </div>
+
+  <div class="card">
+    <h2>💍 Gifteringer i hvitt gull</h2>
+    <div class="ring-list" id="ringList"></div>
+    <div class="row" style="margin-top:14px;">
+      <button class="ghost" id="toggleEdit">Rediger liste</button>
+    </div>
+    <div class="edit-panel" id="editPanel" style="display:none;">
+      <div id="editRows"></div>
+      <button class="secondary" id="addRing">+ Legg til nettside</button>
+    </div>
+  </div>
+
+  <div class="note" style="margin: -4px 0 16px;">
+    <strong>Om automatikk:</strong> denne siden er et manuelt oversiktsbilde — de faktiske push-varslene
+    kommer fra <a href="https://github.com" target="_blank" rel="noopener">GitHub Actions-scriptet</a> som kjører
+    automatisk hver dag i skyen, ikke fra denne nettsiden selv (nettlesere kan ikke hente data fra andre
+    nettsteder på egen hånd av sikkerhetsgrunner).
+  </div>
+
+</div>
+
+<script>
+const KEY_HISTORY = 'gold-history-v4';
+const KEY_SMEDS = 'goldsmiths-v4';
+
+const defaultRings = [
+  { name: 'Giftering Promise 4 mm oval', shop: 'Thune', material: 'Gult gull (585)', width: '4 mm', price: '11850', url: 'https://www.thune.no/giftering-promise-4-mm-gult-gull-oval' },
+  { name: 'Giftering, D-A Solid', shop: 'David-Andersen', material: '585 gull (gult/hvitt/rosé) / 950 platina', width: '2–5 mm (flere valg)', price: '11400', url: 'https://david-andersen.no/giftering-d-a-solid/?productId=solid' },
+  { name: 'Giftering 585 gult gull', shop: 'Gullfunn', material: '585 gult gull', width: '4 mm', price: '', url: 'https://www.gullfunn.no/produkter/1001206/giftering-i-585-gult-gull--4-mm-bredde' }
+];
+
+let state = { history: [], rings: null };
+
+// Bruker vanlig nettleser-lagring (localStorage) siden dette nå er en
+// frittstående nettside utenfor Claude, ikke en artefakt.
+async function loadState() {
+  try { const h = localStorage.getItem(KEY_HISTORY); state.history = h ? JSON.parse(h) : []; } catch { state.history = []; }
+  try { const s = localStorage.getItem(KEY_SMEDS); state.rings = s ? JSON.parse(s) : defaultRings; } catch { state.rings = defaultRings; }
+}
+async function saveHistory() { try { localStorage.setItem(KEY_HISTORY, JSON.stringify(state.history)); } catch (e) { console.error(e); } }
+async function saveRings() { try { localStorage.setItem(KEY_SMEDS, JSON.stringify(state.rings)); } catch (e) { console.error(e); } }
+
+function setStatus(msg, ok) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status ' + (ok === true ? 'ok' : ok === false ? 'err' : '');
+}
+
+function karatFactor() { return parseFloat(document.getElementById('karat').value); }
+
+function renderCurrentPrice() {
+  if (!state.history.length) { document.getElementById('priceBig').textContent = '–'; return; }
+  const last = state.history[state.history.length - 1];
+  const factor = karatFactor();
+  document.getElementById('priceBig').textContent = (last.price24k * factor).toFixed(1);
+  document.getElementById('priceMeta').textContent = 'Sist registrert: ' + last.date;
+
+  const deltaEl = document.getElementById('deltaBadge');
+  if (state.history.length > 1) {
+    const prev = state.history[state.history.length - 2];
+    const diffPct = ((last.price24k - prev.price24k) / prev.price24k) * 100;
+    if (Math.abs(diffPct) > 0.01) {
+      deltaEl.innerHTML = `<span class="delta ${diffPct > 0 ? 'up' : 'down'}">${diffPct > 0 ? '▲' : '▼'} ${Math.abs(diffPct).toFixed(2)}%</span>`;
+    } else deltaEl.innerHTML = '';
+  } else deltaEl.innerHTML = '';
+}
+
+document.getElementById('manualSave').addEventListener('click', async () => {
+  const val = parseFloat(document.getElementById('manualPrice').value);
+  if (!val || val <= 0) { setStatus('Skriv inn et gyldig tall', false); return; }
+  const price24k = val / karatFactor();
+  const today = new Date().toISOString().slice(0, 10);
+  const last = state.history[state.history.length - 1];
+  if (last && last.date === today) last.price24k = price24k;
+  else state.history.push({ date: today, price24k });
+  if (state.history.length > 800) state.history = state.history.slice(-800);
+  await saveHistory();
+  renderCurrentPrice();
+  drawChart();
+  document.getElementById('manualPrice').value = '';
+  setStatus('Pris registrert ✓', true);
+});
+
+document.getElementById('karat').addEventListener('change', () => { renderCurrentPrice(); drawChart(); });
+
+function drawChart() {
+  const el = document.getElementById('chartArea');
+  const data = state.history;
+  if (data.length < 2) {
+    el.innerHTML = '<div class="muted">Trenger minst 2 registreringer for å tegne en kurve.</div>';
+    return;
+  }
+  const factor = karatFactor();
+  const w = 640, h = 200, pad = 32;
+  const prices = data.map(d => d.price24k * factor);
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const range = (max - min) || 1;
+
+  const points = data.map((d, i) => {
+    const x = pad + (i / (data.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((d.price24k * factor - min) / range) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+
+  const first = data[0], lastPt = data[data.length - 1];
+
+  el.innerHTML = `
+    <svg class="chart" viewBox="0 0 ${w} ${h}">
+      <defs>
+        <linearGradient id="goldFade" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#d4af37" stop-opacity="0.25"/>
+          <stop offset="100%" stop-color="#d4af37" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="url(#goldFade)" stroke="none" />
+      <polyline points="${points}" fill="none" stroke="#b8860b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+      <text x="${pad}" y="${h - 6}" font-size="11" fill="#8a7c63">${first.date}</text>
+      <text x="${w - pad}" y="${h - 6}" font-size="11" fill="#8a7c63" text-anchor="end">${lastPt.date}</text>
+      <text x="${pad}" y="16" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr/g</text>
+      <text x="${pad}" y="${h - pad + 14}" font-size="11" fill="#8a7c63">${min.toFixed(0)} kr/g</text>
+    </svg>`;
+}
+
+function renderRingList() {
+  const list = document.getElementById('ringList');
+  list.innerHTML = '';
+  const withPrice = state.rings.filter(r => r.price && !isNaN(parseFloat(r.price)));
+  let cheapestName = null;
+  if (withPrice.length > 1) {
+    let cheapest = withPrice[0];
+    for (const r of withPrice) if (parseFloat(r.price) < parseFloat(cheapest.price)) cheapest = r;
+    cheapestName = cheapest.name;
+  }
+  state.rings.forEach(r => {
+    const a = document.createElement('a');
+    a.className = 'ring-item';
+    a.href = r.url || '#';
+    a.target = '_blank';
+    a.rel = 'noopener';
+    const priceLabel = r.price ? parseFloat(r.price).toLocaleString('no-NO') + ' kr' : '–';
+    a.innerHTML = `
+      <div>
+        <div class="ring-shop">${r.shop || ''}</div>
+        <div class="ring-name">${r.name || 'Uten navn'}</div>
+        <div class="ring-details">${[r.material, r.width].filter(Boolean).join(' · ')}</div>
+      </div>
+      <div class="ring-price">${priceLabel}${r.name === cheapestName ? '<span class="cheapest">Billigst</span>' : ''}</div>
+    `;
+    list.appendChild(a);
+  });
+  if (state.rings.length === 0) list.innerHTML = '<div class="muted">Ingen ringer lagt til ennå.</div>';
+}
+
+function renderEditPanel() {
+  const container = document.getElementById('editRows');
+  container.innerHTML = '';
+  state.rings.forEach((r, i) => {
+    const div = document.createElement('div');
+    div.className = 'edit-row';
+    div.innerHTML = `
+      <button class="del" data-del="${i}">✕</button>
+      <div><span class="field-label">Butikk</span><input type="text" data-i="${i}" data-f="shop" value="${r.shop || ''}"></div>
+      <div><span class="field-label">Navn / modell</span><input type="text" data-i="${i}" data-f="name" value="${r.name || ''}"></div>
+      <div><span class="field-label">Materiale</span><input type="text" data-i="${i}" data-f="material" value="${r.material || ''}"></div>
+      <div><span class="field-label">Bredde/tykkelse</span><input type="text" data-i="${i}" data-f="width" value="${r.width || ''}"></div>
+      <div><span class="field-label">Pris (kr)</span><input type="text" data-i="${i}" data-f="price" value="${r.price || ''}"></div>
+      <div class="full"><span class="field-label">Lenke</span><input type="text" data-i="${i}" data-f="url" value="${r.url || ''}"></div>
+    `;
+    container.appendChild(div);
+  });
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target.matches('#editRows [data-i][data-f]')) {
+    const i = parseInt(e.target.dataset.i);
+    const f = e.target.dataset.f;
+    state.rings[i][f] = e.target.value;
+    saveRings();
+    renderRingList();
+  }
+});
+document.addEventListener('click', (e) => {
+  if (e.target.matches('[data-del]')) {
+    const i = parseInt(e.target.dataset.del);
+    state.rings.splice(i, 1);
+    saveRings(); renderRingList(); renderEditPanel();
+  }
+});
+document.getElementById('toggleEdit').addEventListener('click', () => {
+  const panel = document.getElementById('editPanel');
+  const showing = panel.style.display !== 'none';
+  panel.style.display = showing ? 'none' : 'block';
+  document.getElementById('toggleEdit').textContent = showing ? 'Rediger liste' : 'Skjul redigering';
+  if (!showing) renderEditPanel();
+});
+document.getElementById('addRing').addEventListener('click', () => {
+  state.rings.push({ shop: '', name: '', material: '', width: '', price: '', url: '' });
+  saveRings(); renderRingList(); renderEditPanel();
+});
+
+(async function init() {
+  await loadState();
+  renderRingList();
+  renderCurrentPrice();
+  drawChart();
+})();
+</script>
+</body>
+</html>
