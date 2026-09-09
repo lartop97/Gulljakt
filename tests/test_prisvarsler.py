@@ -110,6 +110,21 @@ def test_extract_price_returns_none_when_nothing_found():
     assert gp.extract_price(html) is None
 
 
+def test_extract_gold_price_24k_from_table_row():
+    html = """
+    <table>
+      <tr><td>18K</td><td>780 kr</td></tr>
+      <tr><td>24K (999,9)</td><td>1010 kr</td></tr>
+    </table>
+    """
+    assert gp.extract_gold_price_24k_from_html(html) == 1010.0
+
+
+def test_extract_gold_price_24k_from_text_pattern():
+    html = "<div>Dagens gullpris 24k: 995 kr per gram</div>"
+    assert gp.extract_gold_price_24k_from_html(html) == 995.0
+
+
 # ==========================================================================
 # Sanity-sjekker (regresjon for P0-bugs: 10x/100x feilaktige priser)
 # ==========================================================================
@@ -249,9 +264,30 @@ def test_merge_gold_history_versions_prefers_ours_for_same_date():
     """
 
     assert gp.merge_gold_history_versions(theirs, ours) == [
-        {"date": "2026-09-08", "price_24k": 900.0},
-        {"date": "2026-09-09", "price_24k": 920.0},
-        {"date": "2026-09-10", "price_24k": 930.0},
+        {"date": "2026-09-08", "prices_24k": {"spot": 900.0}, "price_24k": 900.0},
+        {"date": "2026-09-09", "prices_24k": {"spot": 920.0}, "price_24k": 920.0},
+        {"date": "2026-09-10", "prices_24k": {"spot": 930.0}, "price_24k": 930.0},
+    ]
+
+
+def test_merge_gold_history_versions_merges_sources_for_same_date():
+    spot = """
+    [
+      {"date": "2026-09-09", "price_24k": 920.0, "source": "spot"}
+    ]
+    """
+    gullbanken = """
+    [
+      {"date": "2026-09-09", "prices_24k": {"gullbanken": 980.0}}
+    ]
+    """
+    merged = gp.merge_gold_history_versions(spot, gullbanken)
+    assert merged == [
+        {
+            "date": "2026-09-09",
+            "prices_24k": {"spot": 920.0, "gullbanken": 980.0},
+            "price_24k": 980.0,
+        }
     ]
 
 

@@ -60,6 +60,19 @@ NTFY_SERVER = "https://ntfy.sh"
 GOLD_KARAT = 0.75              # 18K = 0.75, 14K = 0.585, 9K = 0.375, 22K = 0.916
 GOLD_DROP_THRESHOLD_PCT = 1.0  # varsle når gullprisen faller mer enn dette siden forrige sjekk
 RING_BELOW_AVG_PCT = 3.0       # varsle når en ring er > 3% under sitt eget snitt
+GOLD_PREFERRED_SOURCE_KEYS = ["gullbanken", "spot"]
+GOLD_SOURCES = [
+    {
+        "key": "gullbanken",
+        "name": "Gullbanken",
+        "url": "https://www.gullbanken.no/gullpriser/",
+    },
+    {
+        "key": "spot",
+        "name": "Spot (USD/oz → NOK/g)",
+        "url": None,
+    },
+]
 
 # Sanity-grenser brukt til å avvise åpenbart feilaktige skrapte priser før
 # de lagres i historikken (se P0-bugs: regex-fallback har tidligere plukket
@@ -216,6 +229,45 @@ def merge_history_entries_by_date(entries_list, price_key):
     return [merged[date] for date in sorted(merged)]
 
 
+def extract_gold_prices_24k_map(entry):
+    if not isinstance(entry, dict):
+        return {}
+    prices = {}
+    raw_map = entry.get("prices_24k")
+    if isinstance(raw_map, dict):
+        for source_key, value in raw_map.items():
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            if numeric > 0:
+                prices[str(source_key)] = numeric
+    if not prices:
+        legacy_price = entry.get("price_24k")
+        try:
+            legacy_numeric = float(legacy_price)
+        except (TypeError, ValueError):
+            legacy_numeric = None
+        if legacy_numeric and legacy_numeric > 0:
+            source = str(entry.get("source") or "spot")
+            prices[source] = legacy_numeric
+    return prices
+
+
+def preferred_gold_price_24k(prices_24k):
+    if not isinstance(prices_24k, dict):
+        return None
+    for source_key in GOLD_PREFERRED_SOURCE_KEYS:
+        value = prices_24k.get(source_key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    for source_key in sorted(prices_24k):
+        value = prices_24k.get(source_key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
 def merge_gold_history_versions(*versions):
     histories = []
     for version in versions:
@@ -224,7 +276,28 @@ def merge_gold_history_versions(*versions):
         data = json.loads(version)
         if isinstance(data, list):
             histories.append(data)
-    return merge_history_entries_by_date(histories, "price_24k")[-GOLD_HISTORY_LIMIT_DAYS:]
+    merged_by_date = {}
+    for entries in histories:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            date = entry.get("date")
+            if not date:
+                continue
+            current = merged_by_date.setdefault(date, {"date": date, "prices_24k": {}})
+            current["prices_24k"].update(extract_gold_prices_24k_map(entry))
+
+    merged = []
+    for date in sorted(merged_by_date):
+        prices_24k = merged_by_date[date]["prices_24k"]
+        if not prices_24k:
+            continue
+        item = {"date": date, "prices_24k": prices_24k}
+        preferred = preferred_gold_price_24k(prices_24k)
+        if preferred:
+            item["price_24k"] = preferred
+        merged.append(item)
+    return merged[-GOLD_HISTORY_LIMIT_DAYS:]
 
 
 def merge_ring_history_versions(*versions):
@@ -269,7 +342,7 @@ def resolve_history_conflicts(paths):
 # GULLPRIS
 # ==========================================================================
 
-def fetch_gold_nok_per_gram_24k():
+def fetch_spot_gold_nok_per_gram_24k():
     """Henter gullpris i USD/oz og USD/NOK-kurs, returnerer kr/gram for rent (24K) gull."""
     gold_res = request_with_retries("GET", "https://data-asg.goldprice.org/dbXRates/USD", headers=HEADERS, timeout=15)
     usd_per_oz = gold_res.json()["items"][0]["xauPrice"]
@@ -278,6 +351,52 @@ def fetch_gold_nok_per_gram_24k():
     nok_rate = fx_res.json()["rates"]["NOK"]
 
     return (usd_per_oz * nok_rate) / 31.1034768
+
+
+def extract_gold_price_24k_from_html(html):
+    soup = BeautifulSoup(html, "html.parser")
+
+    for row in soup.find_all("tr"):
+        row_text = " ".join(row.stripped_strings)
+        if not re.search(r"(24\s*k|999(?:[,.]\d+)?)", row_text, flags=re.IGNORECASE):
+            continue
+        for match in re.findall(r"\d{1,3}(?:[ .]\d{3})*(?:,\d{1,2})?\s?(?:kr|NOK)?", row_text, flags=re.IGNORECASE):
+            price = parse_nok_number(match)
+            if price and GOLD_MIN_NOK_PER_GRAM_24K <= price <= GOLD_MAX_NOK_PER_GRAM_24K:
+                return price
+
+    text = soup.get_text(" ", strip=True)
+    patterns = [
+        r"(?:24\s*k|999(?:[,.]\d+)?)[^\d]{0,20}(\d{1,3}(?:[ .]\d{3})*(?:,\d{1,2})?)\s?(?:kr|NOK)",
+        r"(\d{1,3}(?:[ .]\d{3})*(?:,\d{1,2})?)\s?(?:kr|NOK)?[^\d]{0,20}(?:24\s*k|999(?:[,.]\d+)?)",
+    ]
+    for pattern in patterns:
+        for value in re.findall(pattern, text, flags=re.IGNORECASE):
+            price = parse_nok_number(value)
+            if price and GOLD_MIN_NOK_PER_GRAM_24K <= price <= GOLD_MAX_NOK_PER_GRAM_24K:
+                return price
+    return None
+
+
+def fetch_gullbanken_nok_per_gram_24k():
+    response = request_with_retries(
+        "GET",
+        "https://www.gullbanken.no/gullpriser/",
+        headers=HEADERS,
+        timeout=20,
+    )
+    price = extract_gold_price_24k_from_html(response.text)
+    if price is None:
+        raise ValueError("Fant ikke 24K-pris på gullbanken.no")
+    return price
+
+
+def fetch_gold_source_nok_per_gram_24k(source):
+    if source["key"] == "spot":
+        return fetch_spot_gold_nok_per_gram_24k()
+    if source["key"] == "gullbanken":
+        return fetch_gullbanken_nok_per_gram_24k()
+    raise ValueError(f"Ukjent gullkilde: {source['key']}")
 
 
 def is_sane_gold_price(price_24k, previous_price_24k):
@@ -295,30 +414,54 @@ def is_sane_gold_price(price_24k, previous_price_24k):
 def check_gold_price():
     print("Sjekker gullpris …")
     history = load_json(GOLD_HISTORY_FILE, [])
-    try:
-        price_24k = fetch_gold_nok_per_gram_24k()
-    except (requests.RequestException, KeyError, IndexError, ValueError, TypeError) as e:
-        print(f"  Feil ved henting av gullpris: {e}")
+    today = datetime.now(timezone.utc).date().isoformat()
+    new_prices_24k = {}
+
+    for source in GOLD_SOURCES:
+        try:
+            price_24k = fetch_gold_source_nok_per_gram_24k(source)
+        except (requests.RequestException, KeyError, IndexError, ValueError, TypeError) as e:
+            print(f"  Feil ved henting fra {source['name']}: {e}")
+            continue
+
+        prev_source_price = None
+        for historical_entry in reversed(history):
+            source_prices = extract_gold_prices_24k_map(historical_entry)
+            if source["key"] in source_prices:
+                prev_source_price = source_prices[source["key"]]
+                break
+
+        if not is_sane_gold_price(price_24k, prev_source_price):
+            print(
+                f"  ADVARSEL: skrapet gullpris fra {source['name']} ({price_24k:.1f} kr/g for 24K) "
+                "ser urealistisk ut og lagres ikke."
+            )
+            send_ntfy(
+                "⚠️ Mistenkelig gullpris",
+                (
+                    f"{source['name']}: hentet {price_24k:.0f} kr/g (24K), "
+                    f"forrige var {prev_source_price or '–'}. Lagres ikke automatisk."
+                ),
+                priority="high",
+                tags="warning",
+            )
+            continue
+
+        new_prices_24k[source["key"]] = price_24k
+        print(f"  {source['name']}: {price_24k:.1f} kr/g (24K)")
+
+    if not new_prices_24k:
+        print("  Klarte ikke hente en gyldig gullpris fra noen kilde.")
         return
 
-    prev = history[-1]["price_24k"] if history else None
-    if not is_sane_gold_price(price_24k, prev):
-        print(
-            f"  ADVARSEL: skrapet gullpris ({price_24k:.1f} kr/g for 24K) ser urealistisk ut "
-            "og lagres ikke. Sjekk kildene manuelt."
-        )
-        send_ntfy(
-            "⚠️ Mistenkelig gullpris",
-            f"Hentet {price_24k:.0f} kr/g (24K), forrige var {prev or '–'}. Lagres ikke automatisk.",
-            priority="high",
-            tags="warning",
-        )
-        return
-
+    price_24k = preferred_gold_price_24k(new_prices_24k)
     price_karat = price_24k * GOLD_KARAT
     today = datetime.now(timezone.utc).date().isoformat()
     print(f"  Pris nå ({GOLD_KARAT * 24:.0f}K): {price_karat:.1f} kr/g")
 
+    prev = None
+    if history:
+        prev = preferred_gold_price_24k(extract_gold_prices_24k_map(history[-1]))
     if prev:
         diff_pct = (price_24k - prev) / prev * 100
         if diff_pct <= -GOLD_DROP_THRESHOLD_PCT:
@@ -330,10 +473,17 @@ def check_gold_price():
         else:
             log(f"  Endring: {diff_pct:+.2f}% (under terskel på {GOLD_DROP_THRESHOLD_PCT}%)")
 
-    if history and history[-1]["date"] == today:
-        history[-1]["price_24k"] = price_24k
+    if history and history[-1].get("date") == today:
+        merged_today = extract_gold_prices_24k_map(history[-1])
+        merged_today.update(new_prices_24k)
+        history[-1]["prices_24k"] = merged_today
+        history[-1]["price_24k"] = preferred_gold_price_24k(merged_today)
     else:
-        history.append({"date": today, "price_24k": price_24k})
+        history.append({
+            "date": today,
+            "prices_24k": new_prices_24k,
+            "price_24k": price_24k,
+        })
     save_json(GOLD_HISTORY_FILE, history[-GOLD_HISTORY_LIMIT_DAYS:])
 
 

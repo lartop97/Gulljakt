@@ -41,6 +41,8 @@
   .delta.up { color: var(--red); background: #f6e6e3; }
   .delta.down { color: var(--green); background: #e5efe6; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+  .source-prices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .source-pill { border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; font-size: 12px; background: #fff; }
   select, input[type=text], input[type=number] { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font-size: 14px; background: #fff; font-family: inherit; color: var(--ink); }
   button { border: none; background: linear-gradient(135deg, var(--gold-light), var(--gold)); color: #fff; padding: 9px 15px; border-radius: 9px; font-size: 14px; font-weight: 600; cursor: pointer; }
   button.secondary { background: var(--gold-pale); color: #6b5416; }
@@ -64,6 +66,9 @@
   .edit-row .full { grid-column: 1 / -1; }
   .edit-row .del { position: absolute; top: 6px; right: 6px; background: none; color: var(--red); padding: 2px 8px; font-size: 15px; }
   .field-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 2px; display: block; }
+  .multi-chart { margin-top: 10px; }
+  .multi-chart + .multi-chart { margin-top: 16px; }
+  .multi-chart-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
 </style>
 </head>
 <body>
@@ -77,7 +82,7 @@
 
   <div class="card">
     <h2>🪙 Gullpris</h2>
-    <div class="muted">Hentes automatisk fra GitHub Actions. Du kan fortsatt legge inn manuelle priser ved behov.</div>
+    <div class="muted">Hentes automatisk fra Gullbanken (med spotpris som reserve). Du kan fortsatt legge inn manuelle priser ved behov.</div>
     <div class="row">
       <label class="muted">Karat:</label>
       <select id="karat">
@@ -95,6 +100,7 @@
       <div id="deltaBadge"></div>
     </div>
     <div class="muted" id="priceMeta"></div>
+    <div id="sourcePrices" class="source-prices"></div>
     <div id="status" class="status"></div>
   </div>
 
@@ -143,6 +149,13 @@ const RINGS_CONFIG_URL = 'rings.json';
 const RING_HISTORY_URL = 'ring_historikk.json';
 const HISTORY_LIMIT_DAYS = 730;
 const RING_BELOW_AVG_PCT = 3.0;
+const GOLD_SOURCE_LABELS = {
+  gullbanken: 'Gullbanken',
+  spot: 'Spotpris',
+  local: 'Manuell',
+};
+const GOLD_SOURCE_PRIORITY = ['gullbanken', 'spot', 'local'];
+const GOLD_SOURCE_COLORS = ['#b8860b', '#4a7c59', '#6f6aa8', '#a5453b'];
 
 // Fallback dersom rings.json ikke kan hentes (f.eks. offline første last).
 const defaultRings = [
@@ -154,6 +167,7 @@ const defaultRings = [
 let state = {
   history: [], rings: null, githubUpdated: null, githubCount: 0, githubError: null,
   ringHistory: {}, ringHistoryError: null, ringHistoryUpdated: null,
+  goldSources: [],
 };
 
 // Bruker vanlig nettleser-lagring (localStorage) siden dette nå er en
@@ -228,9 +242,21 @@ function normalizeHistoryEntry(entry, fallbackSource) {
   if (!entry || typeof entry !== 'object') return null;
   const date = String(entry.date || '');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-  const price24k = Number(entry.price24k ?? entry.price_24k);
-  if (!Number.isFinite(price24k) || price24k <= 0) return null;
-  return { date, price24k, source: entry.source || fallbackSource };
+  const source = String(entry.source || fallbackSource || 'local');
+  const prices24k = {};
+  const map = entry.prices24k || entry.prices_24k;
+  if (map && typeof map === 'object') {
+    Object.entries(map).forEach(([key, value]) => {
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && numeric > 0) prices24k[String(key)] = numeric;
+    });
+  }
+  const legacyPrice = Number(entry.price24k ?? entry.price_24k);
+  if (Number.isFinite(legacyPrice) && legacyPrice > 0 && Object.keys(prices24k).length === 0) {
+    prices24k[source] = legacyPrice;
+  }
+  if (Object.keys(prices24k).length === 0) return null;
+  return { date, prices24k, source };
 }
 
 function sortAndLimitHistory(history) {
@@ -253,6 +279,17 @@ function mergeHistory(automaticHistory, localHistory) {
   return sortAndLimitHistory([...byDate.values()]);
 }
 
+function getHistorySources() {
+  const keys = new Set();
+  state.history.forEach(entry => {
+    Object.keys(entry.prices24k || {}).forEach(k => keys.add(k));
+  });
+  const preferred = [];
+  GOLD_SOURCE_PRIORITY.forEach(k => { if (keys.has(k)) preferred.push(k); });
+  [...keys].sort().forEach(k => { if (!preferred.includes(k)) preferred.push(k); });
+  return preferred;
+}
+
 async function loadAutomaticHistory() {
   const localHistory = Array.isArray(state.history) ? state.history : [];
   try {
@@ -267,12 +304,14 @@ async function loadAutomaticHistory() {
     state.githubCount = validAutomaticHistory.length;
     state.githubUpdated = validAutomaticHistory.length ? validAutomaticHistory[validAutomaticHistory.length - 1].date : null;
     state.githubError = null;
+    state.goldSources = getHistorySources();
     await saveHistory();
   } catch (e) {
     state.history = sortAndLimitHistory(localHistory.map(entry => normalizeHistoryEntry(entry, entry?.source || 'local')));
     state.githubCount = 0;
     state.githubUpdated = null;
     state.githubError = e.message;
+    state.goldSources = getHistorySources();
   }
 }
 
@@ -295,21 +334,63 @@ function setStatus(msg, ok) {
 
 function karatFactor() { return parseFloat(document.getElementById('karat').value); }
 
+function getPreferredSourcePrice(prices24k) {
+  if (!prices24k || typeof prices24k !== 'object') return null;
+  for (const source of GOLD_SOURCE_PRIORITY) {
+    const value = Number(prices24k[source]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  const keys = Object.keys(prices24k).sort();
+  for (const source of keys) {
+    const value = Number(prices24k[source]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function getSourceLabel(sourceKey) {
+  return GOLD_SOURCE_LABELS[sourceKey] || sourceKey;
+}
+
 function renderCurrentPrice() {
   if (!state.history.length) { document.getElementById('priceBig').textContent = '–'; return; }
   const last = state.history[state.history.length - 1];
   const factor = karatFactor();
-  document.getElementById('priceBig').textContent = (last.price24k * factor).toFixed(1);
+  const lastPrice24k = getPreferredSourcePrice(last.prices24k);
+  if (!lastPrice24k) { document.getElementById('priceBig').textContent = '–'; return; }
+  document.getElementById('priceBig').textContent = (lastPrice24k * factor).toFixed(1);
   document.getElementById('priceMeta').textContent = 'Sist registrert: ' + last.date;
 
   const deltaEl = document.getElementById('deltaBadge');
   if (state.history.length > 1) {
     const prev = state.history[state.history.length - 2];
-    const diffPct = ((last.price24k - prev.price24k) / prev.price24k) * 100;
-    if (Math.abs(diffPct) > 0.01) {
-      deltaEl.innerHTML = `<span class="delta ${diffPct > 0 ? 'up' : 'down'}">${diffPct > 0 ? '▲' : '▼'} ${Math.abs(diffPct).toFixed(2)}%</span>`;
-    } else deltaEl.innerHTML = '';
-  } else deltaEl.innerHTML = '';
+    const prevPrice24k = getPreferredSourcePrice(prev.prices24k);
+    if (!prevPrice24k) deltaEl.innerHTML = '';
+    else {
+      const diffPct = ((lastPrice24k - prevPrice24k) / prevPrice24k) * 100;
+      if (Math.abs(diffPct) > 0.01) {
+        deltaEl.innerHTML = `<span class="delta ${diffPct > 0 ? 'up' : 'down'}">${diffPct > 0 ? '▲' : '▼'} ${Math.abs(diffPct).toFixed(2)}%</span>`;
+      } else deltaEl.innerHTML = '';
+    }
+  } else {
+    deltaEl.innerHTML = '';
+  }
+  renderSourcePrices();
+}
+
+function renderSourcePrices() {
+  const el = document.getElementById('sourcePrices');
+  if (!state.history.length) { el.innerHTML = ''; return; }
+  const last = state.history[state.history.length - 1];
+  const factor = karatFactor();
+  const parts = state.goldSources
+    .map(sourceKey => {
+      const value = Number(last.prices24k?.[sourceKey]);
+      if (!Number.isFinite(value) || value <= 0) return null;
+      return `<span class="source-pill">${getSourceLabel(sourceKey)}: ${(value * factor).toFixed(1)} kr/g</span>`;
+    })
+    .filter(Boolean);
+  el.innerHTML = parts.join('');
 }
 
 document.getElementById('manualSave').addEventListener('click', async () => {
@@ -319,10 +400,12 @@ document.getElementById('manualSave').addEventListener('click', async () => {
   const today = new Date().toISOString().slice(0, 10);
   const last = state.history[state.history.length - 1];
   if (last && last.date === today) {
-    last.price24k = price24k;
+    if (!last.prices24k || typeof last.prices24k !== 'object') last.prices24k = {};
+    last.prices24k.local = price24k;
     last.source = 'local';
-  } else state.history.push({ date: today, price24k, source: 'local' });
+  } else state.history.push({ date: today, prices24k: { local: price24k }, source: 'local' });
   if (state.history.length > HISTORY_LIMIT_DAYS) state.history = state.history.slice(-HISTORY_LIMIT_DAYS);
+  state.goldSources = getHistorySources();
   await saveHistory();
   renderCurrentPrice();
   drawChart();
@@ -334,47 +417,58 @@ document.getElementById('karat').addEventListener('change', () => { renderCurren
 
 function drawChart() {
   const el = document.getElementById('chartArea');
-  const data = state.history;
-  if (data.length < 2) {
-    el.innerHTML = '<div class="muted">Trenger minst 2 registreringer for å tegne en kurve.</div>';
+  const sources = state.goldSources.length ? state.goldSources : getHistorySources();
+  const factor = karatFactor();
+  const sourceSeries = sources
+    .map(sourceKey => ({
+      sourceKey,
+      entries: state.history
+        .map(entry => ({
+          date: entry.date,
+          price24k: Number(entry.prices24k?.[sourceKey]),
+          source: entry.source,
+        }))
+        .filter(entry => Number.isFinite(entry.price24k) && entry.price24k > 0),
+    }))
+    .filter(item => item.entries.length >= 2);
+
+  if (!sourceSeries.length) {
+    el.innerHTML = '<div class="muted">Trenger minst 2 registreringer per kilde for å tegne kurver.</div>';
     return;
   }
-  const factor = karatFactor();
   const w = 640, h = 200, pad = 32;
-  const prices = data.map(d => d.price24k * factor);
-  const min = Math.min(...prices), max = Math.max(...prices);
-  const range = (max - min) || 1;
-
-  const points = data.map((d, i) => {
-    const x = pad + (i / (data.length - 1)) * (w - 2 * pad);
-    const y = h - pad - ((d.price24k * factor - min) / range) * (h - 2 * pad);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const manualPoints = data.map((d, i) => {
-    if (d.source !== 'local') return '';
-    const x = pad + (i / (data.length - 1)) * (w - 2 * pad);
-    const y = h - pad - ((d.price24k * factor - min) / range) * (h - 2 * pad);
-    return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="#4a7c59"><title>Manuell registrering: ${d.date}</title></circle>`;
+  el.innerHTML = sourceSeries.map((series, index) => {
+    const prices = series.entries.map(d => d.price24k * factor);
+    const min = Math.min(...prices), max = Math.max(...prices);
+    const range = (max - min) || 1;
+    const points = series.entries.map((d, i) => {
+      const x = pad + (i / (series.entries.length - 1)) * (w - 2 * pad);
+      const y = h - pad - ((d.price24k * factor - min) / range) * (h - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    const sourceColor = GOLD_SOURCE_COLORS[index % GOLD_SOURCE_COLORS.length];
+    const gradientId = `goldFade-${series.sourceKey}`;
+    const first = series.entries[0];
+    const lastPt = series.entries[series.entries.length - 1];
+    return `
+      <div class="multi-chart">
+        <div class="multi-chart-title">${getSourceLabel(series.sourceKey)}</div>
+        <svg class="chart" viewBox="0 0 ${w} ${h}">
+          <defs>
+            <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="${sourceColor}" stop-opacity="0.25"/>
+              <stop offset="100%" stop-color="${sourceColor}" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="url(#${gradientId})" stroke="none" />
+          <polyline points="${points}" fill="none" stroke="${sourceColor}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
+          <text x="${pad}" y="${h - 6}" font-size="11" fill="#8a7c63">${first.date}</text>
+          <text x="${w - pad}" y="${h - 6}" font-size="11" fill="#8a7c63" text-anchor="end">${lastPt.date}</text>
+          <text x="${pad}" y="16" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr/g</text>
+          <text x="${pad}" y="${h - pad + 14}" font-size="11" fill="#8a7c63">${min.toFixed(0)} kr/g</text>
+        </svg>
+      </div>`;
   }).join('');
-
-  const first = data[0], lastPt = data[data.length - 1];
-
-  el.innerHTML = `
-    <svg class="chart" viewBox="0 0 ${w} ${h}">
-      <defs>
-        <linearGradient id="goldFade" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#d4af37" stop-opacity="0.25"/>
-          <stop offset="100%" stop-color="#d4af37" stop-opacity="0"/>
-        </linearGradient>
-      </defs>
-      <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="url(#goldFade)" stroke="none" />
-      <polyline points="${points}" fill="none" stroke="#b8860b" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
-      ${manualPoints}
-      <text x="${pad}" y="${h - 6}" font-size="11" fill="#8a7c63">${first.date}</text>
-      <text x="${w - pad}" y="${h - 6}" font-size="11" fill="#8a7c63" text-anchor="end">${lastPt.date}</text>
-      <text x="${pad}" y="16" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr/g</text>
-      <text x="${pad}" y="${h - pad + 14}" font-size="11" fill="#8a7c63">${min.toFixed(0)} kr/g</text>
-    </svg>`;
 }
 
 function ringIsBelowOwnAverage(url) {
