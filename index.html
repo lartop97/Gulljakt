@@ -103,6 +103,7 @@
     <div id="chartArea"></div>
     <div class="muted" id="automaticHistoryMeta" style="margin-top:6px;">Laster automatisk historikk …</div>
     <div class="muted" style="margin-top:4px;">Kurven bruker GitHub-historikk som primærkilde og tar med manuelle lokale registreringer der de finnes.</div>
+    <div id="goldSourceCharts" style="margin-top:14px;"></div>
   </div>
 
   <div class="card">
@@ -139,6 +140,7 @@
 const KEY_HISTORY = 'gold-history-v4';
 const KEY_SMEDS = 'goldsmiths-v4';
 const AUTO_HISTORY_URL = 'gullpris_historikk.json';
+const GOLD_SOURCE_HISTORY_URL = 'gullpris_kilder_historikk.json';
 const RINGS_CONFIG_URL = 'rings.json';
 const RING_HISTORY_URL = 'ring_historikk.json';
 const HISTORY_LIMIT_DAYS = 730;
@@ -154,6 +156,7 @@ const defaultRings = [
 let state = {
   history: [], rings: null, githubUpdated: null, githubCount: 0, githubError: null,
   ringHistory: {}, ringHistoryError: null, ringHistoryUpdated: null,
+  goldSourceHistory: {}, goldSourceHistoryError: null,
 };
 
 // Bruker vanlig nettleser-lagring (localStorage) siden dette nå er en
@@ -166,6 +169,7 @@ async function loadState() {
   } catch { state.rings = null; }
   await loadRingsConfig();
   await loadAutomaticHistory();
+  await loadGoldSourceHistory();
   await loadRingHistory();
 }
 
@@ -200,6 +204,20 @@ async function loadRingHistory() {
       const entries = Array.isArray(entry?.entries) ? entry.entries : [];
       const last = entries[entries.length - 1];
       if (last?.date && (!latest || last.date > latest)) latest = last.date;
+    }
+
+    async function loadGoldSourceHistory() {
+      try {
+        const response = await fetch(GOLD_SOURCE_HISTORY_URL, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Ugyldig gullpris_kilder_historikk.json-format');
+        state.goldSourceHistory = data;
+        state.goldSourceHistoryError = null;
+      } catch (e) {
+        state.goldSourceHistory = {};
+        state.goldSourceHistoryError = e.message;
+      }
     }
     state.ringHistoryUpdated = latest;
 
@@ -375,6 +393,67 @@ function drawChart() {
       <text x="${pad}" y="16" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr/g</text>
       <text x="${pad}" y="${h - pad + 14}" font-size="11" fill="#8a7c63">${min.toFixed(0)} kr/g</text>
     </svg>`;
+}
+
+function drawMiniGoldChart(entries, strokeColor, gradientId) {
+  const w = 640, h = 180, pad = 28;
+  const prices = entries.map(e => Number(e.price_24k ?? e.price24k)).filter(Number.isFinite);
+  if (prices.length < 2) return '';
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const range = (max - min) || 1;
+  const points = prices.map((price, i) => {
+    const x = pad + (i / (prices.length - 1)) * (w - 2 * pad);
+    const y = h - pad - ((price - min) / range) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const firstDate = entries[0]?.date || '';
+  const lastDate = entries[entries.length - 1]?.date || '';
+
+  return `
+    <svg class="chart" viewBox="0 0 ${w} ${h}">
+      <defs>
+        <linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${strokeColor}" stop-opacity="0.22"/>
+          <stop offset="100%" stop-color="${strokeColor}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <polygon points="${pad},${h-pad} ${points} ${w-pad},${h-pad}" fill="url(#${gradientId})" stroke="none" />
+      <polyline points="${points}" fill="none" stroke="${strokeColor}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" />
+      <text x="${pad}" y="${h - 6}" font-size="11" fill="#8a7c63">${firstDate}</text>
+      <text x="${w - pad}" y="${h - 6}" font-size="11" fill="#8a7c63" text-anchor="end">${lastDate}</text>
+      <text x="${pad}" y="15" font-size="11" fill="#8a7c63">${max.toFixed(0)} kr/g</text>
+      <text x="${pad}" y="${h - pad + 14}" font-size="11" fill="#8a7c63">${min.toFixed(0)} kr/g</text>
+    </svg>`;
+}
+
+function renderGoldSourceCharts() {
+  const el = document.getElementById('goldSourceCharts');
+  const sourceEntries = Object.entries(state.goldSourceHistory || {}).filter(([, source]) => {
+    const entries = Array.isArray(source?.entries) ? source.entries : [];
+    return entries.length > 1;
+  });
+
+  if (!sourceEntries.length) {
+    const msg = state.goldSourceHistoryError
+      ? `Ingen kildehistorikk tilgjengelig ennå (${state.goldSourceHistoryError}).`
+      : 'Ingen gullpriskilder med nok historikk til egen graf ennå.';
+    el.innerHTML = `<div class="muted">${msg}</div>`;
+    return;
+  }
+
+  const cards = sourceEntries.map(([sourceId, source], idx) => {
+    const entries = source.entries.slice(-HISTORY_LIMIT_DAYS);
+    const label = source.label || sourceId;
+    const chart = drawMiniGoldChart(entries, idx % 2 === 0 ? '#b8860b' : '#4a7c59', `goldSourceFade-${idx}`);
+    const latest = entries[entries.length - 1];
+    return `
+      <div style="margin-top:12px; border-top:1px dashed var(--border); padding-top:12px;">
+        <div class="muted" style="margin-bottom:6px;"><strong>${label}</strong> · Sist: ${Number(latest.price_24k ?? latest.price24k).toFixed(1)} kr/g (24K)</div>
+        ${chart}
+      </div>`;
+  });
+
+  el.innerHTML = cards.join('');
 }
 
 function ringIsBelowOwnAverage(url) {
@@ -576,6 +655,7 @@ document.getElementById('addRing').addEventListener('click', () => {
   renderRingList();
   renderCurrentPrice();
   drawChart();
+  renderGoldSourceCharts();
   renderAutomaticHistoryMeta();
   populateRingChartSelect();
   drawRingChart();

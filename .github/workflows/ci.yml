@@ -37,4 +37,5 @@ jobs:
         run: |
           python3 -c "import json; json.load(open('rings.json'))"
           python3 -c "import json; json.load(open('gullpris_historikk.json'))"
+          python3 -c "import json; json.load(open('gullpris_kilder_historikk.json'))"
           python3 -c "import json; json.load(open('ring_historikk.json'))"

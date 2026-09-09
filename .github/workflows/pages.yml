@@ -8,6 +8,7 @@ on:
       - 'manifest.json'
       - 'rings.json'
       - 'gullpris_historikk.json'
+      - 'gullpris_kilder_historikk.json'
       - 'ring_historikk.json'
       - '.github/workflows/pages.yml'
   workflow_dispatch: {}
@@ -39,6 +40,7 @@ jobs:
           mkdir -p _site
           cp index.html manifest.json rings.json _site/
           [ -f gullpris_historikk.json ] && cp gullpris_historikk.json _site/ || echo "[]" > _site/gullpris_historikk.json
+          [ -f gullpris_kilder_historikk.json ] && cp gullpris_kilder_historikk.json _site/ || echo "{}" > _site/gullpris_kilder_historikk.json
           [ -f ring_historikk.json ] && cp ring_historikk.json _site/ || echo "{}" > _site/ring_historikk.json
 
       - name: Last opp nettsiden som artefakt
