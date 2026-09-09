@@ -205,3 +205,81 @@ def test_check_ring_prices_uses_url_not_name_for_cheapest_duplicate_names(monkey
             "Samme ring: 8500 kr — lavere enn snittet (8950 kr)",
         )
     ]
+
+
+def test_merge_gold_history_versions_prefers_ours_for_same_date():
+    theirs = """
+    [
+      {"date": "2026-09-08", "price_24k": 900.0},
+      {"date": "2026-09-09", "price_24k": 910.0}
+    ]
+    """
+    ours = """
+    [
+      {"date": "2026-09-09", "price_24k": 920.0},
+      {"date": "2026-09-10", "price_24k": 930.0}
+    ]
+    """
+
+    assert gp.merge_gold_history_versions(theirs, ours) == [
+        {"date": "2026-09-08", "price_24k": 900.0},
+        {"date": "2026-09-09", "price_24k": 920.0},
+        {"date": "2026-09-10", "price_24k": 930.0},
+    ]
+
+
+def test_resolve_history_conflicts_merges_ring_history_file(tmp_path):
+    history_file = tmp_path / "ring_historikk.json"
+    history_file.write_text(
+        """<<<<<<< HEAD
+{
+  "https://butikk-a.no/ring": {
+    "name": "Ring A",
+    "shop": "Butikk A",
+    "entries": [
+      {"date": "2026-09-08", "price": 10000.0}
+    ]
+  }
+}
+=======
+{
+  "https://butikk-a.no/ring": {
+    "name": "Ring A",
+    "shop": "Butikk A",
+    "entries": [
+      {"date": "2026-09-08", "price": 9900.0},
+      {"date": "2026-09-09", "price": 9800.0}
+    ]
+  },
+  "https://butikk-b.no/ring": {
+    "name": "Ring B",
+    "shop": "Butikk B",
+    "entries": [
+      {"date": "2026-09-09", "price": 12000.0}
+    ]
+  }
+}
+>>>>>>> upstream
+""",
+        encoding="utf-8",
+    )
+
+    gp.resolve_history_conflicts([history_file])
+
+    assert gp.load_json(history_file, {}) == {
+        "https://butikk-a.no/ring": {
+            "name": "Ring A",
+            "shop": "Butikk A",
+            "entries": [
+                {"date": "2026-09-08", "price": 9900.0},
+                {"date": "2026-09-09", "price": 9800.0},
+            ],
+        },
+        "https://butikk-b.no/ring": {
+            "name": "Ring B",
+            "shop": "Butikk B",
+            "entries": [
+                {"date": "2026-09-09", "price": 12000.0},
+            ],
+        },
+    }
