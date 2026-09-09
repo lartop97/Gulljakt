@@ -7,13 +7,15 @@ kjøpe.
 Prosjektet består av to deler:
 
 - **`gullsmed_prisvarsler.py`** — et Python-script med vanlig internett-tilgang.
-  Det henter dagens gullpris (USD/oz → kr/gram), sjekker prisen på ringene i
+  Det henter dagens gullpris (primært fra Gullbanken, med internasjonal spot
+  som reserve), sjekker prisen på ringene i
   [`rings.json`](rings.json), lagrer historikk, og sender push-varsler via
   [ntfy.sh](https://ntfy.sh) når gullprisen faller eller en ring er både
   billigst av de du følger *og* under sitt eget historiske snitt.
 - **`index.html`** — en frittstående, statisk nettside (ingen backend) som
   viser gullpris, prisutvikling og ringliste. Den henter den automatisk
-  genererte historikken (`gullpris_historikk.json`, `ring_historikk.json`)
+  genererte historikken (`gullpris_historikk.json`,
+  `gullpris_kilder_historikk.json`, `ring_historikk.json`)
   direkte fra GitHub Pages, og lar deg i tillegg registrere priser manuelt
   lokalt (lagret i nettleserens `localStorage`).
 
@@ -22,7 +24,7 @@ Prosjektet består av to deler:
 ```
 GitHub Actions (daglig, cron)
   └─ gullsmed_prisvarsler.py
-       ├─ henter gullpris + valutakurs → gullpris_historikk.json
+       ├─ henter gullpris fra flere kilder → gullpris_historikk.json + gullpris_kilder_historikk.json
        ├─ henter ringpriser (rings.json) → ring_historikk.json
        ├─ sender push-varsler via ntfy.sh
        └─ committer oppdatert historikk til repoet

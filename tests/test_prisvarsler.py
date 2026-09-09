@@ -4,6 +4,7 @@ Kjøres med:  pytest tests/
 """
 
 import sys
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -135,6 +136,81 @@ def test_is_sane_gold_price_rejects_out_of_range():
 def test_is_sane_gold_price_rejects_large_jump_from_previous():
     assert gp.is_sane_gold_price(1200.0, 900.0) is False
     assert gp.is_sane_gold_price(920.0, 900.0) is True
+
+
+def test_parse_gold_price_from_text_returns_none_for_out_of_bounds():
+    assert gp.parse_gold_price_from_text("150 kr") is None
+    assert gp.parse_gold_price_from_text("950 kr") == 950.0
+
+
+def test_fetch_gullbanken_gold_nok_per_gram_24k_from_text_block(monkeypatch):
+    class FakeResponse:
+        text = "<html><body>Innleveringspris 24k gull 995 kr per gram</body></html>"
+
+    monkeypatch.setattr(gp, "request_with_retries", lambda *a, **k: FakeResponse())
+    assert gp.fetch_gullbanken_gold_nok_per_gram_24k() == 995.0
+
+
+def test_merge_gold_source_history_versions_merges_by_date():
+    current = """
+    {
+      "gullbanken": {
+        "label": "Gullbanken",
+        "entries": [{"date": "2026-09-08", "price_24k": 900.0}]
+      }
+    }
+    """
+    incoming = """
+    {
+      "gullbanken": {
+        "label": "Gullbanken",
+        "entries": [
+          {"date": "2026-09-08", "price_24k": 910.0},
+          {"date": "2026-09-09", "price_24k": 920.0}
+        ]
+      }
+    }
+    """
+    assert gp.merge_gold_source_history_versions(current, incoming) == {
+        "gullbanken": {
+            "label": "Gullbanken",
+            "entries": [
+                {"date": "2026-09-08", "price_24k": 910.0},
+                {"date": "2026-09-09", "price_24k": 920.0},
+            ],
+        }
+    }
+
+
+def test_check_gold_price_updates_source_history_and_prefers_gullbanken(monkeypatch, tmp_path):
+    gold_history_file = tmp_path / "gullpris_historikk.json"
+    source_history_file = tmp_path / "gullpris_kilder_historikk.json"
+    gold_history_file.write_text("[]", encoding="utf-8")
+    source_history_file.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(gp, "GOLD_HISTORY_FILE", gold_history_file)
+    monkeypatch.setattr(gp, "GOLD_SOURCE_HISTORY_FILE", source_history_file)
+    monkeypatch.setattr(gp, "send_ntfy", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gp,
+        "fetch_gold_prices_by_source",
+        lambda: (
+            {
+                "gullbanken": {"label": "Gullbanken", "price_24k": 980.0},
+                "internasjonal-spot": {"label": "Internasjonal", "price_24k": 970.0},
+            },
+            {},
+        ),
+    )
+
+    gp.check_gold_price()
+
+    gold_history = json.loads(gold_history_file.read_text(encoding="utf-8"))
+    source_history = json.loads(source_history_file.read_text(encoding="utf-8"))
+
+    assert gold_history[-1]["price_24k"] == 980.0
+    assert source_history["gullbanken"]["entries"][-1]["price_24k"] == 980.0
+    assert source_history["internasjonal-spot"]["entries"][-1]["price_24k"] == 970.0
 
 
 # ==========================================================================
@@ -309,4 +385,49 @@ def test_resolve_history_conflicts_merges_ring_history_file(tmp_path):
                 {"date": "2026-09-09", "price": 12000.0},
             ],
         },
+    }
+
+
+def test_resolve_history_conflicts_merges_gold_source_history_file(tmp_path):
+    history_file = tmp_path / "gullpris_kilder_historikk.json"
+    history_file.write_text(
+        """<<<<<<< HEAD
+{
+  "gullbanken": {
+    "label": "Gullbanken",
+    "entries": [
+      {"date": "2026-09-08", "price_24k": 900.0}
+    ]
+  }
+}
+=======
+{
+  "gullbanken": {
+    "label": "Gullbanken",
+    "entries": [
+      {"date": "2026-09-08", "price_24k": 910.0},
+      {"date": "2026-09-09", "price_24k": 920.0}
+    ]
+  }
+}
+>>>>>>> upstream
+""",
+        encoding="utf-8",
+    )
+
+    old_file = gp.GOLD_SOURCE_HISTORY_FILE
+    try:
+        gp.GOLD_SOURCE_HISTORY_FILE = history_file
+        gp.resolve_history_conflicts([history_file])
+    finally:
+        gp.GOLD_SOURCE_HISTORY_FILE = old_file
+
+    assert gp.load_json(history_file, {}) == {
+        "gullbanken": {
+            "label": "Gullbanken",
+            "entries": [
+                {"date": "2026-09-08", "price_24k": 910.0},
+                {"date": "2026-09-09", "price_24k": 920.0},
+            ],
+        }
     }
