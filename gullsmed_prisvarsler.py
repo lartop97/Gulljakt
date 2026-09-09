@@ -358,17 +358,18 @@ def extract_gold_price_24k_from_html(html):
 
     for row in soup.find_all("tr"):
         row_text = " ".join(row.stripped_strings)
-        if not re.search(r"(24\s*k|999(?:[,.]\d+)?)", row_text, flags=re.IGNORECASE):
+        has_24k = re.search(r"24\s*k", row_text, flags=re.IGNORECASE)
+        has_999_gold = re.search(r"(gull|gold)[^\d]{0,15}999|999[^\d]{0,15}(gull|gold)", row_text, flags=re.IGNORECASE)
+        if not (has_24k or has_999_gold):
             continue
-        for match in re.findall(r"\d{1,3}(?:[ .]\d{3})*(?:,\d{1,2})?\s?(?:kr|NOK)?", row_text, flags=re.IGNORECASE):
+        for match in re.findall(r"\d{1,6}(?:[ .]\d{3})*(?:,\d{1,2})?\s?(?:kr|NOK)", row_text, flags=re.IGNORECASE):
             price = parse_nok_number(match)
             if price and GOLD_MIN_NOK_PER_GRAM_24K <= price <= GOLD_MAX_NOK_PER_GRAM_24K:
                 return price
 
     text = soup.get_text(" ", strip=True)
     patterns = [
-        r"(?:24\s*k|999(?:[,.]\d+)?)[^\d]{0,20}(\d{1,3}(?:[ .]\d{3})*(?:,\d{1,2})?)\s?(?:kr|NOK)",
-        r"(\d{1,3}(?:[ .]\d{3})*(?:,\d{1,2})?)\s?(?:kr|NOK)?[^\d]{0,20}(?:24\s*k|999(?:[,.]\d+)?)",
+        r"(?:24\s*k|999(?:[,.]\d+)?)[^\d]{0,20}(\d{1,6}(?:[ .]\d{3})*(?:,\d{1,2})?)\s?(?:kr|NOK)",
     ]
     for pattern in patterns:
         for value in re.findall(pattern, text, flags=re.IGNORECASE):
