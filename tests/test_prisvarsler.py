@@ -150,6 +150,33 @@ def test_send_ntfy_skips_when_topic_is_placeholder(monkeypatch, capsys):
     assert "plassholderverdi" in capsys.readouterr().out
 
 
+def test_send_ntfy_sanitizes_unicode_headers(monkeypatch):
+    monkeypatch.setattr(gp, "NTFY_TOPIC", "hemmelig-emne")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+    captured = {}
+
+    def fake_post(url, data, headers, timeout):
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(gp.requests, "post", fake_post)
+
+    gp.send_ntfy("✓ Prissjekk startet 📉", "Melding", priority="high", tags="💍")
+
+    assert captured["headers"] == {
+        "Title": "Prissjekk startet",
+        "Priority": "high",
+        "Tags": "moneybag",
+    }
+
+
 def test_check_ring_prices_uses_url_not_name_for_cheapest_duplicate_names(monkeypatch, tmp_path):
     history_file = tmp_path / "ring_historikk.json"
     history_file.write_text(

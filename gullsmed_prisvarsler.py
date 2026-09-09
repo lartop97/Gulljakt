@@ -39,6 +39,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -111,6 +112,17 @@ def log(*args):
         print(*args)
 
 
+def sanitize_http_header_value(value, fallback="Varsel"):
+    value = str(value).strip()
+    try:
+        value.encode("latin-1")
+        return value
+    except UnicodeEncodeError:
+        normalized = unicodedata.normalize("NFKD", value)
+        cleaned = normalized.encode("latin-1", "ignore").decode("latin-1").strip()
+        return cleaned or fallback
+
+
 def request_with_retries(method, url, **kwargs):
     """Enkel retry/backoff-wrapper rundt requests, for å tåle forbigående
     nettverksfeil i stedet for å hoppe over hele dagens datapunkt."""
@@ -142,7 +154,11 @@ def send_ntfy(title, message, priority="default", tags="moneybag"):
         response = requests.post(
             f"{NTFY_SERVER}/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
-            headers={"Title": title, "Priority": priority, "Tags": tags},
+            headers={
+                "Title": sanitize_http_header_value(title),
+                "Priority": sanitize_http_header_value(priority, fallback="default"),
+                "Tags": sanitize_http_header_value(tags, fallback="moneybag"),
+            },
             timeout=10,
         )
         response.raise_for_status()
