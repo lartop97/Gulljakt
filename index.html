@@ -391,11 +391,11 @@ function renderRingList() {
   const list = document.getElementById('ringList');
   list.innerHTML = '';
   const withPrice = state.rings.filter(r => r.price && !isNaN(parseFloat(r.price)));
-  let cheapestName = null;
+  let cheapestUrl = null;
   if (withPrice.length > 1) {
     let cheapest = withPrice[0];
     for (const r of withPrice) if (parseFloat(r.price) < parseFloat(cheapest.price)) cheapest = r;
-    cheapestName = cheapest.name;
+    cheapestUrl = cheapest.url || null;
   }
   state.rings.forEach(r => {
     const a = document.createElement('a');
@@ -404,19 +404,31 @@ function renderRingList() {
     a.target = '_blank';
     a.rel = 'noopener';
     const priceLabel = r.price ? parseFloat(r.price).toLocaleString('no-NO') + ' kr' : '–';
-    const isCheapest = r.name === cheapestName;
+    const isCheapest = Boolean(cheapestUrl) && r.url === cheapestUrl;
     const isBelowAvg = ringIsBelowOwnAverage(r.url);
-    let badge = '';
-    if (isCheapest && isBelowAvg) badge = '<span class="cheapest">Billigst &amp; under snitt 🎯</span>';
-    else if (isCheapest) badge = '<span class="cheapest">Billigst</span>';
-    a.innerHTML = `
-      <div>
-        <div class="ring-shop">${r.shop || ''}</div>
-        <div class="ring-name">${r.name || 'Uten navn'}</div>
-        <div class="ring-details">${[r.material, r.width].filter(Boolean).join(' · ')}</div>
-      </div>
-      <div class="ring-price">${priceLabel}${badge}</div>
-    `;
+    const left = document.createElement('div');
+    const shop = document.createElement('div');
+    shop.className = 'ring-shop';
+    shop.textContent = r.shop || '';
+    const name = document.createElement('div');
+    name.className = 'ring-name';
+    name.textContent = r.name || 'Uten navn';
+    const details = document.createElement('div');
+    details.className = 'ring-details';
+    details.textContent = [r.material, r.width].filter(Boolean).join(' · ');
+    left.append(shop, name, details);
+
+    const price = document.createElement('div');
+    price.className = 'ring-price';
+    price.textContent = priceLabel;
+    if (isCheapest) {
+      const badge = document.createElement('span');
+      badge.className = 'cheapest';
+      badge.textContent = isBelowAvg ? 'Billigst & under snitt 🎯' : 'Billigst';
+      price.appendChild(badge);
+    }
+
+    a.append(left, price);
     list.appendChild(a);
   });
   if (state.rings.length === 0) list.innerHTML = '<div class="muted">Ingen ringer lagt til ennå.</div>';
@@ -427,9 +439,13 @@ function populateRingChartSelect() {
   const urlsWithHistory = Object.keys(state.ringHistory).filter(
     u => Array.isArray(state.ringHistory[u]?.entries) && state.ringHistory[u].entries.length > 1
   );
-  select.innerHTML = urlsWithHistory
-    .map(u => `<option value="${u}">${state.ringHistory[u].shop} – ${state.ringHistory[u].name}</option>`)
-    .join('');
+  select.innerHTML = '';
+  urlsWithHistory.forEach(u => {
+    const option = document.createElement('option');
+    option.value = u;
+    option.textContent = `${state.ringHistory[u].shop} – ${state.ringHistory[u].name}`;
+    select.appendChild(option);
+  });
   if (!select.dataset.bound) {
     select.addEventListener('change', drawRingChart);
     select.dataset.bound = '1';
@@ -493,15 +509,35 @@ function renderEditPanel() {
   state.rings.forEach((r, i) => {
     const div = document.createElement('div');
     div.className = 'edit-row';
-    div.innerHTML = `
-      <button class="del" data-del="${i}">✕</button>
-      <div><span class="field-label">Butikk</span><input type="text" data-i="${i}" data-f="shop" value="${r.shop || ''}"></div>
-      <div><span class="field-label">Navn / modell</span><input type="text" data-i="${i}" data-f="name" value="${r.name || ''}"></div>
-      <div><span class="field-label">Materiale</span><input type="text" data-i="${i}" data-f="material" value="${r.material || ''}"></div>
-      <div><span class="field-label">Bredde/tykkelse</span><input type="text" data-i="${i}" data-f="width" value="${r.width || ''}"></div>
-      <div><span class="field-label">Pris (kr)</span><input type="text" data-i="${i}" data-f="price" value="${r.price || ''}"></div>
-      <div class="full"><span class="field-label">Lenke</span><input type="text" data-i="${i}" data-f="url" value="${r.url || ''}"></div>
-    `;
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.dataset.del = String(i);
+    del.type = 'button';
+    del.textContent = '✕';
+    div.appendChild(del);
+
+    const fields = [
+      ['shop', 'Butikk'],
+      ['name', 'Navn / modell'],
+      ['material', 'Materiale'],
+      ['width', 'Bredde/tykkelse'],
+      ['price', 'Pris (kr)'],
+      ['url', 'Lenke'],
+    ];
+    fields.forEach(([field, label]) => {
+      const wrapper = document.createElement('div');
+      if (field === 'url') wrapper.className = 'full';
+      const labelEl = document.createElement('span');
+      labelEl.className = 'field-label';
+      labelEl.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.dataset.i = String(i);
+      input.dataset.f = field;
+      input.value = r[field] || '';
+      wrapper.append(labelEl, input);
+      div.appendChild(wrapper);
+    });
     container.appendChild(div);
   });
 }

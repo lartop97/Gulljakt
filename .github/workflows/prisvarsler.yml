@@ -43,6 +43,27 @@ jobs:
             echo "Ingen endringer i prishistorikken."
           else
             git commit -m "Oppdater prishistorikk $(date -u +%Y-%m-%d)"
-            git pull --rebase --autostash
-            git push
+            for forsok in 1 2 3; do
+              if git pull --rebase --autostash; then
+                if git push; then
+                  exit 0
+                fi
+              else
+                konfliktfiler="$(git diff --name-only --diff-filter=U || true)"
+                if [ -n "$konfliktfiler" ]; then
+                  python3 gullsmed_prisvarsler.py --resolve-history-conflicts $konfliktfiler
+                  git add $konfliktfiler
+                  git rebase --continue
+                  if git push; then
+                    exit 0
+                  fi
+                else
+                  exit 1
+                fi
+              fi
+              echo "Push/rebase-race på forsøk $forsok, prøver igjen …"
+              sleep $((forsok * 2))
+            done
+            echo "Klarte ikke lagre prishistorikken etter flere forsøk."
+            exit 1
           fi

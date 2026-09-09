@@ -148,3 +148,165 @@ def test_send_ntfy_skips_when_topic_is_placeholder(monkeypatch, capsys):
     gp.send_ntfy("Tittel", "Melding")
     assert calls == []
     assert "plassholderverdi" in capsys.readouterr().out
+
+
+def test_send_ntfy_sanitizes_unicode_headers(monkeypatch):
+    monkeypatch.setattr(gp, "NTFY_TOPIC", "hemmelig-emne")
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+    captured = {}
+
+    def fake_post(url, data, headers, timeout):
+        captured["url"] = url
+        captured["data"] = data
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(gp.requests, "post", fake_post)
+
+    gp.send_ntfy("✓ Prissjekk startet 📉", "Melding", priority="high", tags="💍")
+
+    assert captured["headers"] == {
+        "Title": "Prissjekk startet",
+        "Priority": "high",
+        "Tags": "moneybag",
+    }
+
+
+def test_check_ring_prices_uses_url_not_name_for_cheapest_duplicate_names(monkeypatch, tmp_path):
+    history_file = tmp_path / "ring_historikk.json"
+    history_file.write_text(
+        """
+        {
+          "https://butikk-a.no/ring": {
+            "name": "Samme ring",
+            "shop": "Butikk A",
+            "entries": [
+              {"date": "2026-09-01", "price": 10000.0},
+              {"date": "2026-09-02", "price": 9900.0}
+            ]
+          },
+          "https://butikk-b.no/ring": {
+            "name": "Samme ring",
+            "shop": "Butikk B",
+            "entries": [
+              {"date": "2026-09-01", "price": 9000.0},
+              {"date": "2026-09-02", "price": 8900.0}
+            ]
+          }
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(gp, "RING_HISTORY_FILE", history_file)
+    monkeypatch.setattr(
+        gp,
+        "RINGS",
+        [
+            {"name": "Samme ring", "shop": "Butikk A", "url": "https://butikk-a.no/ring"},
+            {"name": "Samme ring", "shop": "Butikk B", "url": "https://butikk-b.no/ring"},
+        ],
+    )
+    monkeypatch.setattr(
+        gp,
+        "fetch_ring_price",
+        lambda url, selector=None: {
+            "https://butikk-a.no/ring": 10050.0,
+            "https://butikk-b.no/ring": 8500.0,
+        }[url],
+    )
+
+    calls = []
+    monkeypatch.setattr(gp, "send_ntfy", lambda title, message, priority="default", tags="moneybag": calls.append((title, message)))
+
+    gp.check_ring_prices()
+
+    assert calls == [
+        (
+            "Butikk B er nå billigst 💍",
+            "Samme ring: 8500 kr — lavere enn snittet (8950 kr)",
+        )
+    ]
+
+
+def test_merge_gold_history_versions_prefers_ours_for_same_date():
+    theirs = """
+    [
+      {"date": "2026-09-08", "price_24k": 900.0},
+      {"date": "2026-09-09", "price_24k": 910.0}
+    ]
+    """
+    ours = """
+    [
+      {"date": "2026-09-09", "price_24k": 920.0},
+      {"date": "2026-09-10", "price_24k": 930.0}
+    ]
+    """
+
+    assert gp.merge_gold_history_versions(theirs, ours) == [
+        {"date": "2026-09-08", "price_24k": 900.0},
+        {"date": "2026-09-09", "price_24k": 920.0},
+        {"date": "2026-09-10", "price_24k": 930.0},
+    ]
+
+
+def test_resolve_history_conflicts_merges_ring_history_file(tmp_path):
+    history_file = tmp_path / "ring_historikk.json"
+    history_file.write_text(
+        """<<<<<<< HEAD
+{
+  "https://butikk-a.no/ring": {
+    "name": "Ring A",
+    "shop": "Butikk A",
+    "entries": [
+      {"date": "2026-09-08", "price": 10000.0}
+    ]
+  }
+}
+=======
+{
+  "https://butikk-a.no/ring": {
+    "name": "Ring A",
+    "shop": "Butikk A",
+    "entries": [
+      {"date": "2026-09-08", "price": 9900.0},
+      {"date": "2026-09-09", "price": 9800.0}
+    ]
+  },
+  "https://butikk-b.no/ring": {
+    "name": "Ring B",
+    "shop": "Butikk B",
+    "entries": [
+      {"date": "2026-09-09", "price": 12000.0}
+    ]
+  }
+}
+>>>>>>> upstream
+""",
+        encoding="utf-8",
+    )
+
+    gp.resolve_history_conflicts([history_file])
+
+    assert gp.load_json(history_file, {}) == {
+        "https://butikk-a.no/ring": {
+            "name": "Ring A",
+            "shop": "Butikk A",
+            "entries": [
+                {"date": "2026-09-08", "price": 9900.0},
+                {"date": "2026-09-09", "price": 9800.0},
+            ],
+        },
+        "https://butikk-b.no/ring": {
+            "name": "Ring B",
+            "shop": "Butikk B",
+            "entries": [
+                {"date": "2026-09-09", "price": 12000.0},
+            ],
+        },
+    }

@@ -39,6 +39,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -80,6 +81,7 @@ DEBUG = "--debug" in sys.argv
 
 HTTP_MAX_RETRIES = 3
 HTTP_BACKOFF_SECONDS = 2
+RESOLVE_HISTORY_CONFLICTS_FLAG = "--resolve-history-conflicts"
 
 
 def load_rings():
@@ -108,6 +110,17 @@ RINGS = load_rings()
 def log(*args):
     if DEBUG:
         print(*args)
+
+
+def sanitize_http_header_value(value, fallback="Varsel"):
+    value = str(value).strip()
+    try:
+        value.encode("latin-1")
+        return value
+    except UnicodeEncodeError:
+        normalized = unicodedata.normalize("NFKD", value)
+        cleaned = normalized.encode("latin-1", "ignore").decode("latin-1").strip()
+        return cleaned or fallback
 
 
 def request_with_retries(method, url, **kwargs):
@@ -141,7 +154,11 @@ def send_ntfy(title, message, priority="default", tags="moneybag"):
         response = requests.post(
             f"{NTFY_SERVER}/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
-            headers={"Title": title, "Priority": priority, "Tags": tags},
+            headers={
+                "Title": sanitize_http_header_value(title),
+                "Priority": sanitize_http_header_value(priority, fallback="default"),
+                "Tags": sanitize_http_header_value(tags, fallback="moneybag"),
+            },
             timeout=10,
         )
         response.raise_for_status()
@@ -158,6 +175,94 @@ def load_json(path, default):
 
 def save_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def split_conflicted_text(text):
+    """Returnerer (current, incoming) fra en tekst med git-konfliktmarkører."""
+    current = []
+    incoming = []
+    mode = "both"
+
+    for line in text.splitlines(keepends=True):
+        if line.startswith("<<<<<<< "):
+            mode = "ours"
+            continue
+        if line.startswith("=======") and mode == "ours":
+            mode = "theirs"
+            continue
+        if line.startswith(">>>>>>> ") and mode == "theirs":
+            mode = "both"
+            continue
+
+        if mode in {"both", "ours"}:
+            current.append(line)
+        if mode in {"both", "theirs"}:
+            incoming.append(line)
+
+    return "".join(current), "".join(incoming)
+
+
+def merge_history_entries_by_date(entries_list, price_key):
+    merged = {}
+    for entries in entries_list:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            date = entry.get("date")
+            price = entry.get(price_key)
+            if not date or price is None:
+                continue
+            merged[date] = {"date": date, price_key: price}
+    return [merged[date] for date in sorted(merged)]
+
+
+def merge_gold_history_versions(*versions):
+    histories = []
+    for version in versions:
+        if not version:
+            continue
+        data = json.loads(version)
+        if isinstance(data, list):
+            histories.append(data)
+    return merge_history_entries_by_date(histories, "price_24k")[-GOLD_HISTORY_LIMIT_DAYS:]
+
+
+def merge_ring_history_versions(*versions):
+    merged = {}
+    for version in versions:
+        if not version:
+            continue
+        data = json.loads(version)
+        if not isinstance(data, dict):
+            continue
+        for url, ring_data in data.items():
+            if not isinstance(ring_data, dict):
+                continue
+            current = merged.setdefault(url, {"name": "", "shop": "", "entries": []})
+            if ring_data.get("name"):
+                current["name"] = ring_data["name"]
+            if ring_data.get("shop"):
+                current["shop"] = ring_data["shop"]
+            current["entries"] = merge_history_entries_by_date(
+                [current["entries"], ring_data.get("entries", [])],
+                "price",
+            )[-300:]
+    return merged
+
+
+def resolve_history_conflicts(paths):
+    for raw_path in paths:
+        path = Path(raw_path)
+        text = path.read_text(encoding="utf-8")
+        current, incoming = split_conflicted_text(text)
+        if path.name == GOLD_HISTORY_FILE.name:
+            merged = merge_gold_history_versions(current, incoming)
+        elif path.name == RING_HISTORY_FILE.name:
+            merged = merge_ring_history_versions(current, incoming)
+        else:
+            raise ValueError(f"Ukjent historikkfil for konfliktoppløsning: {path}")
+        save_json(path, merged)
+        print(f"  Løste konflikt i {path.name}")
 
 
 # ==========================================================================
@@ -363,7 +468,7 @@ def check_ring_prices():
             continue
 
         print(f"    Pris nå: {price:.0f} kr")
-        current_prices[name] = price
+        current_prices[url] = price
 
         entries = history.setdefault(url, {"name": name, "shop": ring.get("shop", ""), "entries": []})["entries"]
         if entries and entries[-1]["date"] == today:
@@ -378,8 +483,8 @@ def check_ring_prices():
         return  # trenger minst to priser for å si hva som er "billigst"
 
     cheapest_url = min(
-        (u for u in history if history[u]["name"] in current_prices),
-        key=lambda u: current_prices[history[u]["name"]],
+        (u for u in history if u in current_prices),
+        key=lambda u: current_prices[u],
         default=None,
     )
     if not cheapest_url:
@@ -409,6 +514,11 @@ def check_ring_prices():
 # ==========================================================================
 
 def main():
+    if RESOLVE_HISTORY_CONFLICTS_FLAG in sys.argv:
+        flag_index = sys.argv.index(RESOLVE_HISTORY_CONFLICTS_FLAG)
+        conflict_paths = sys.argv[flag_index + 1:] or [str(GOLD_HISTORY_FILE), str(RING_HISTORY_FILE)]
+        resolve_history_conflicts(conflict_paths)
+        return
     send_ntfy("✓ Prissjekk startet", "Gullpris-varsler kjører nå...", priority="default", tags="heart")
     check_gold_price()
     print()
