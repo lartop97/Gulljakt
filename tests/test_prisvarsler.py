@@ -148,3 +148,60 @@ def test_send_ntfy_skips_when_topic_is_placeholder(monkeypatch, capsys):
     gp.send_ntfy("Tittel", "Melding")
     assert calls == []
     assert "plassholderverdi" in capsys.readouterr().out
+
+
+def test_check_ring_prices_uses_url_not_name_for_cheapest_duplicate_names(monkeypatch, tmp_path):
+    history_file = tmp_path / "ring_historikk.json"
+    history_file.write_text(
+        """
+        {
+          "https://butikk-a.no/ring": {
+            "name": "Samme ring",
+            "shop": "Butikk A",
+            "entries": [
+              {"date": "2026-09-01", "price": 10000.0},
+              {"date": "2026-09-02", "price": 9900.0}
+            ]
+          },
+          "https://butikk-b.no/ring": {
+            "name": "Samme ring",
+            "shop": "Butikk B",
+            "entries": [
+              {"date": "2026-09-01", "price": 9000.0},
+              {"date": "2026-09-02", "price": 8900.0}
+            ]
+          }
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(gp, "RING_HISTORY_FILE", history_file)
+    monkeypatch.setattr(
+        gp,
+        "RINGS",
+        [
+            {"name": "Samme ring", "shop": "Butikk A", "url": "https://butikk-a.no/ring"},
+            {"name": "Samme ring", "shop": "Butikk B", "url": "https://butikk-b.no/ring"},
+        ],
+    )
+    monkeypatch.setattr(
+        gp,
+        "fetch_ring_price",
+        lambda url, selector=None: {
+            "https://butikk-a.no/ring": 10050.0,
+            "https://butikk-b.no/ring": 8500.0,
+        }[url],
+    )
+
+    calls = []
+    monkeypatch.setattr(gp, "send_ntfy", lambda title, message, priority="default", tags="moneybag": calls.append((title, message)))
+
+    gp.check_ring_prices()
+
+    assert calls == [
+        (
+            "Butikk B er nå billigst 💍",
+            "Samme ring: 8500 kr — lavere enn snittet (8950 kr)",
+        )
+    ]

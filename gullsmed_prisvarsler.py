@@ -363,7 +363,7 @@ def check_ring_prices():
             continue
 
         print(f"    Pris nå: {price:.0f} kr")
-        current_prices[name] = price
+        current_prices[url] = price
 
         entries = history.setdefault(url, {"name": name, "shop": ring.get("shop", ""), "entries": []})["entries"]
         if entries and entries[-1]["date"] == today:
@@ -378,8 +378,8 @@ def check_ring_prices():
         return  # trenger minst to priser for å si hva som er "billigst"
 
     cheapest_url = min(
-        (u for u in history if history[u]["name"] in current_prices),
-        key=lambda u: current_prices[history[u]["name"]],
+        (u for u in history if u in current_prices),
+        key=lambda u: current_prices[u],
         default=None,
     )
     if not cheapest_url:
