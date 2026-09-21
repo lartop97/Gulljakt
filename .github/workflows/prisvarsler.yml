@@ -2,9 +2,6 @@ name: Gullpris og ringpris-varsler
 
 on:
   schedule:
-    # 06:00 UTC = 07:00 norsk vintertid / 08:00 sommertid.
-    # Juster timen (første tall) om du vil ha varselet på et annet tidspunkt.
-    - cron: '0 6 * * *'
   workflow_dispatch: {}   # lar deg også trykke "Run workflow" manuelt for å teste
 
 permissions:
